@@ -5,6 +5,7 @@ import logging
 from collections import defaultdict
 import re
 import argparse
+import resource
 
 from nltk.corpus import stopwords
 import numpy as np
@@ -33,7 +34,7 @@ class Vector2Dict:
             logging.basicConfig(filename=filename, level=level,
                                 format=format_) 
 
-    def init_collecting(self, train_size):
+    def init_collecting(self, train_needed):
         out_dict_filen = self.output_dir + self.params.outfilen
         if os.path.isfile(out_dict_filen): 
             raise Exception(
@@ -42,15 +43,16 @@ class Vector2Dict:
         self.init_logging(self.params.log_to_err)
         self.outfile = open(out_dict_filen, mode='w')
         self.train_on_full = False
-        self.train_size = train_size
-        if not self.train_size:
+        self.train_needed = train_needed
+        self.tain_needed = 5000
+        if not self.train_needed:
             if self.params.test_mode == 'collect':
-                self.train_size = 5000  
-            else: 
-                self.train_size = 20000
+                self.train_needed = 5000  
+            else:
+                self.train_needed = 20000
         self.test_indices = []
 
-    def __init__(self, params, train_size=None):
+    def __init__(self, params, train_needed=None):
         self.vecnil_dir = '/mnt/store/home/makrai/project/efnilex/vector/'
         self.params = params
         if self.params.test_mode == 'accuracy':
@@ -70,7 +72,7 @@ class Vector2Dict:
                     int(self.params.forced_stem),
                     self.params.restrict_embed)
         if self.params.test_mode == 'collect':
-            self.init_collecting(train_size)
+            self.init_collecting(train_needed)
         elif self.params.test_mode == 'accuracy':
             self.init_logging(self.params.log_to_err)
         elif self.params.test_mode == 'vocab':
@@ -89,7 +91,8 @@ class Vector2Dict:
         self.hunspell_vocab = defaultdict(set) # {'sr': ..., 'tg': ...}
         for half, embed_filen in self.embed_filens.iteritems():
             if half[0] in self.params.restrict_embed:
-                for corp_name in ['webcorp', 'slwac2.0', 'Lithuanian']:
+                for corp_name in ['mnsz2-webcorp', 'mnsz2', 'webcorp',
+                                  'slwac2.0', 'Lithuanian']:
                     if corp_name in embed_filen:
                         hv_filen = self.vecnil_dir+'hunspell/'+corp_name
                         break
@@ -181,15 +184,18 @@ class Vector2Dict:
             logging.info('{} seed pairs'.format(len(self.seed_dict)))
         else:
             logging.warning('seed does not exist: '+filen)
-        if len(set(self.seed_dict.keys()).intersection(
-            set(self.embeds['sr'].keys()))) < self.train_size:
+        seed_vocab = set(self.seed_dict.keys())
+        if 'sr' in self.embeds:
+            seed_vocab = seed_vocab.intersection(
+                set(self.embeds['sr'].keys()))
+        if len(seed_vocab) < self.train_needed:
             if fallback:
                 raise Exception('too few training pairs')
             else:
                 logging.info('fallbacking to broader seed')
                 self.read_seed_dict(fallback=True)
 
-    def load_embed(self, filen, write_vocab=False, just_model=False):
+    def load_embed(self, filen, write_vocab=False, type_='lists_and_dict'):
         if re.search('polyglot-..\.pkl$', filen):
             words, vecs = pickle.load(open(filen, mode='rb'))
         else:
@@ -220,11 +226,19 @@ class Vector2Dict:
             'shape of embedding: {}'.format(vecs.shape))
         if write_vocab:
             self.write_vocab(filen, words)
-        if just_model:
+        if type_ == 'model':
             return embed0
+        elif type_ == 'lists':
+            return words, vecs
         else:
             embed = dict(izip(words, vecs))
-            return words, vecs, embed
+            if type_ == 'embed':
+                return embed
+            elif type_ == 'lists_and_dict':
+                return words, vecs, embed
+            else:
+                raise Exception(
+                    'load_embed called with unknown type_ {}'.format(type_))
 
     def write_vocab(self, efilen, words):
             vfilen = efilen  +'.vocab'
@@ -277,7 +291,7 @@ class Vector2Dict:
         self.oosr = []
         self.ootg = []
         index = 0 # 4
-        while self.train_collected < self.train_size or self.train_on_full: 
+        while self.train_collected < self.train_needed or self.train_on_full: 
             self.append_training_item(index, log_ooseed, ooseed_file)
             index += 1
         self.test_indices += range(index, self.sr_vocab_size) 
@@ -293,6 +307,24 @@ class Vector2Dict:
         if trans_model_filen:
             pickle.dump((self.test_indices, self.model), open(
                 trans_model_filen, mode='wb'))
+
+        def train_mem(self):
+            with open(self.embed_filens['sr']) as sr_embed_f:
+                train_size = 0
+                for line in sr_embed_f:
+                    cells = line.strip().split(' ')
+                    sr_word = cells[0]
+                    sr_vec = np.array(float(coord) for coord in cells[1:])
+                    if train_size < self.train_needed:
+                        if self.sr_words in self.seed_dict:
+                            train_size += 1
+                            self.append_training_item(sr_word, sr_vec=sr_vec)
+                        else:
+                            self.embeds['sr'][sr_word] = sr_vec
+                    else:
+                        self.model.fit(np.array(self.sr_train),
+                                       np.array(self.tg_train))
+
 
     def restrict_embed(self, sr=False, tg=False):
         if sr:
@@ -359,7 +391,7 @@ class Vector2Dict:
             if self.has_seed == 1000:
                 logging.info(self.prec_msg())
             self.finished = bool(
-                self.has_seed==self.train_size 
+                self.has_seed==self.train_needed 
                 if self.params.test_mode=='score' 
                 #else self.collected >= 100000)
                 else self.has_seed > 1000)
@@ -394,7 +426,7 @@ class Vector2Dict:
         """
         # TODO
         print resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        part_size = 1600000000000
+        part_size = 160000000000
         for denom_term in [self.sr_vecs_test.shape[1], self.tg_vecs.shape[0],
                            self.tg_vecs.shape[1]]:
             part_size /= denom_term
@@ -487,16 +519,22 @@ class Vector2Dict:
         self.train()
         self.test()
 
+    def collect_main(self):
+        self.embeds['tg'] = self.load_embed(self.embed_filens['tg'],
+                                            type_='embed')
+        self.read_seed_dict()
+        self.model = LinearRegression()
+
     def main(self):
         self.embed_filens = {
             'sr': self.params.source_embedding, 
             'tg': self.params.target_embedding}
         if self.params.test_mode == 'accuracy':
             model = self.load_embed(self.embed_filens['sr'],
-                                    just_model=True)
+                                    type_='model')
             lower = False
             # TODO
-            for label in ['+l', '1l', 'stem']:
+            for label in ['+l', '1l']:
                 if label in self.embed_filens['sr']:
                     lower = True
             return model.accuracy( 

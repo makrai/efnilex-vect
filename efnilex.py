@@ -1,16 +1,15 @@
 import os.path
 import pickle
-from itertools import izip
 import logging
+import argparse
 from collections import defaultdict
 import re
-import argparse
-import resource
+import cProfile
 
+from bidict import bidict
 from nltk.corpus import stopwords
 import numpy as np
-from sklearn.linear_model import LinearRegression  #, ElasticNet, Lasso, Ridge
-#from sklearn.svm import SVR
+from sklearn.linear_model import LinearRegression
 from gensim.models import Word2Vec
 
 class Vector2Dict:
@@ -42,17 +41,23 @@ class Vector2Dict:
                     out_dict_filen))
         self.init_logging(self.params.log_to_err)
         self.outfile = open(out_dict_filen, mode='w')
-        self.train_on_full = False
         self.train_needed = train_needed
-        self.tain_needed = 5000
         if not self.train_needed:
             if self.params.test_mode == 'collect':
                 self.train_needed = 5000  
             else:
+                # This branch is for test mode 'score'
                 self.train_needed = 20000
         self.test_indices = []
 
+    def strip_embed_filen(self, filen):
+        filen = filen.split('/')[-1]
+        for ext in ['w2v', 'gensim', 'gz', 'bin', 'pkl']:
+            filen = filen.split('.'+ext)[0]
+        return filen
+
     def __init__(self, params, train_needed=None):
+        # TODO config file
         self.vecnil_dir = '/mnt/store/home/makrai/project/efnilex/vector/'
         self.params = params
         if self.params.test_mode == 'accuracy':
@@ -63,20 +68,28 @@ class Vector2Dict:
             self.output_dir = self.vecnil_dir + 'score/'
         if not self.params.outfilen:
             if self.params.test_mode == 'accuracy':
-                self.params.outfilen = self.params.source_embedding.split('/')[-1]
+                self.params.outfilen = self.strip_embed_filen(
+                    self.params.source_embedding)
             else:
                 self.params.outfilen = '{}__{}__{}_{}f_c{}'.format(
-                    self.params.source_embedding.split('/')[-1],
-                    self.params.target_embedding.split('/')[-1],
+                    self.strip_embed_filen(self.params.source_embedding),
+                    self.strip_embed_filen(self.params.target_embedding),
                     self.params.seed_name.split('/')[-1], 
                     int(self.params.forced_stem),
                     self.params.restrict_embed)
-        if self.params.test_mode == 'collect':
-            self.init_collecting(train_needed)
-        elif self.params.test_mode == 'accuracy':
+        self.embed_filens = {
+            'sr': self.params.source_embedding, 
+            'tg': self.params.target_embedding}
+        if self.params.test_mode == 'accuracy':
             self.init_logging(self.params.log_to_err)
+            self.accuracy_main()
         elif self.params.test_mode == 'vocab':
             self.init_logging(True)
+            self.load_embed(self.embed_filens['sr'], write_vocab=True)
+        else: 
+            # This branch is for test_modes 'collect' and 'score'
+            self.init_collecting(train_needed)
+            self.biling_main()
 
     def read_hunspell_vocab(self):
         """
@@ -88,11 +101,11 @@ class Vector2Dict:
                     embed.vocab > embed.hunspell (in bash)
         """
         logging.info('forced stemming: {}'.format(self.params.forced_stem))
-        self.hunspell_vocab = defaultdict(set) # {'sr': ..., 'tg': ...}
+        self.hunspell_vocab = defaultdict(set) 
+        # There will be two keys: hunspell_vocab = {'sr': ..., 'tg': ...}
         for half, embed_filen in self.embed_filens.iteritems():
             if half[0] in self.params.restrict_embed:
-                for corp_name in ['mnsz2-webcorp', 'mnsz2', 'webcorp',
-                                  'slwac2.0', 'Lithuanian']:
+                for corp_name in ['webcorp', 'slwac2.0', 'Lithuanian']:
                     if corp_name in embed_filen:
                         hv_filen = self.vecnil_dir+'hunspell/'+corp_name
                         break
@@ -110,6 +123,7 @@ class Vector2Dict:
                                 continue
                             word, _ = line.strip().decode('utf8').split(' ')
                             if word in self.embeds[half]:
+                                #      ^ TODO
                                 self.hunspell_vocab[half].add(word)
 
     def read_hunspell_vocab_forced_stem(self, half, filen):
@@ -134,12 +148,14 @@ class Vector2Dict:
                         inflexed, word = line.split(' ')
                         # word is the stem
                         if word in self.embeds[half]:
+                            #      ^ TODO
                             words.add(word)
                     else:
                         # string refused by hunspell
                         pass
 
     def get_seed_dict_filen(self, fallback):
+        # TODO config file
         if self.params.seed_name=='wikt2dict':
             return os.path.expanduser(
                 "~")+'/repo/wikt2dict/dat/{}_{}'.format(
@@ -163,7 +179,6 @@ class Vector2Dict:
         columns = [1,3] if 'wikt2dict' in self.params.seed_name else range(2)
         if self.params.reverse:
             columns.reverse()
-        #separator = ' ' if 'opus' in self.params.seed_name else '\t'
         filen = self.get_seed_dict_filen(fallback)
         if not fallback:
             self.seed_dict = {}
@@ -174,28 +189,31 @@ class Vector2Dict:
                     separator = '\t' if '\t' in line else ' '
                     cells = line.decode('utf8').strip().split(separator)
                     sr_word, tg_word = [cells[index] for index in columns]
-                    #if ' ' in sr_word:
-                    #    continue
+                    if ' ' in sr_word:
+                        # TODO
+                        pass
                     if sr_word in self.seed_dict:
-                        # In the case of wikt2dict, the first translation is
-                        # present in more editions of Wiktionary.
+                        # It is assumed that the first translation is the
+                        # best. E.g. in the case of wikt2dict, the first
+                        # translation is present in more editions of
+                        # Wiktionary.
                         continue
                     self.seed_dict[sr_word] = tg_word
             logging.info('{} seed pairs'.format(len(self.seed_dict)))
         else:
             logging.warning('seed does not exist: '+filen)
+        logging.debug(self.seed_dict.items()[:20])
         seed_vocab = set(self.seed_dict.keys())
-        if 'sr' in self.embeds:
-            seed_vocab = seed_vocab.intersection(
-                set(self.embeds['sr'].keys()))
+        # TODO .intersection( set(self.sr_words))  
         if len(seed_vocab) < self.train_needed:
             if fallback:
+                logging.error('too few training pairs')
                 raise Exception('too few training pairs')
             else:
                 logging.info('fallbacking to broader seed')
                 self.read_seed_dict(fallback=True)
 
-    def load_embed(self, filen, write_vocab=False, type_='lists_and_dict'):
+    def load_embed(self, filen, write_vocab=False, type_='mx_and_bidict'):
         if re.search('polyglot-..\.pkl$', filen):
             words, vecs = pickle.load(open(filen, mode='rb'))
         else:
@@ -205,11 +223,6 @@ class Vector2Dict:
                 embed0 = Polyglot.load_word2vec_format(filen)
                 words = embed0.index2word
                 vecs = embed0.vectors
-            elif 'bin' in filen: 
-                logging.debug('bin')
-                embed0 = Word2Vec.load_word2vec_format(filen, binary=True)
-                words = embed0.index2word
-                vecs = embed0.syn0
             elif re.search('gensim', filen):
                 embed0 = Word2Vec.load(filen)
                 words = embed0.index2word
@@ -218,8 +231,9 @@ class Vector2Dict:
                 mx = nnlm.model.get_params()[0].get_value()
                 # TODO
             else:
-                # mikolov, orig, glove, hpca, senna
-                embed0 = Word2Vec.load_word2vec_format(filen)
+                # This branch is for target embeddings in the format of the original C code 
+                embed0 = Word2Vec.load_word2vec_format(filen, 
+                                                       binary='bin' in filen)
                 words = embed0.index2word
                 vecs = embed0.syn0
         logging.info(
@@ -228,17 +242,10 @@ class Vector2Dict:
             self.write_vocab(filen, words)
         if type_ == 'model':
             return embed0
-        elif type_ == 'lists':
-            return words, vecs
-        else:
-            embed = dict(izip(words, vecs))
-            if type_ == 'embed':
-                return embed
-            elif type_ == 'lists_and_dict':
-                return words, vecs, embed
-            else:
-                raise Exception(
-                    'load_embed called with unknown type_ {}'.format(type_))
+        elif type_ == 'mx_and_bidict':
+            return vecs.astype(
+                'float32', casting='same_kind', copy=False), bidict(
+                    enumerate(words))
 
     def write_vocab(self, efilen, words):
             vfilen = efilen  +'.vocab'
@@ -248,85 +255,55 @@ class Vector2Dict:
             logging.info(
                 'vocab written to {}'.format(vfilen))
 
-    def append_training_item(self, index, log_ooseed, ooseed_file):
-        """
-        appends the index-th source word to the training sample
-        """
-        sr_word = self.sr_words[index]
+    def append_training_item(self, sr_word, sr_vec=None, log_ooseed=False,
+                             ooseed_file=None):
         if sr_word.lower() in stopwords.words('english'):
             self.oov['stopword'] += 1
             return 0
-        if sr_word not in self.seed_dict:
-            # mostly punctuation and inflected forms
-            # and Martin, Roger,...
-            if log_ooseed:
-                ooseed_file.write(sr_word.encode('utf8')+'\n')
-            self.test_indices.append(index)
-            self.oov['seed dict'] += 1
-            return 0
         tg_word = self.seed_dict[sr_word]
-        if tg_word in self.embeds['tg']:
-            self.sr_train.append(self.embeds['sr'][sr_word])
-            self.tg_train.append(self.embeds['tg'][tg_word])
-            self.train_collected += 1
+        if tg_word in self.tg_vocab:
+            if sr_vec is None:
+                # This branch is for mode 'score'
+                sr_vec = self.embeds['sr'][sr_word]
+            self.sr_train.append(sr_vec)
+            self.tg_train.append(self.tg_vecs[self.tg_index[:tg_word]])
         else:
             self.ootg.append(tg_word)
             self.oov['tg (filtered) embed'] += 1
 
-    def load_model(self, trans_model_filen):
-        logging.info('loading translation mx from {}'.format(
-            trans_model_filen))
-        self.test_indices, self.model = pickle.load(open(
-            trans_model_filen, mode='rb'))
+    def read_word_and_vec(self, line):
+        cells = line.decode('utf8').strip().split(' ')
+        word = cells[0]
+        vec = np.array([float(coord) for coord in
+                        cells[1:]]).astype('float32')
+        return word, vec
 
-    def train(self, log_ooseed=False, ooseed_filen=None,
-              trans_model_filen=None):
-        logging.info('train on full: {}'.format(self.train_on_full))
-        logging.info('training translation model')
-        self.sr_train = []
-        self.tg_train = []
-        self.train_collected = 0
-        self.oov = defaultdict(int)
-        ooseed_file = open( ooseed_filen, mode='w') if log_ooseed else None
-        self.oosr = []
-        self.ootg = []
-        index = 0 # 4
-        while self.train_collected < self.train_needed or self.train_on_full: 
-            self.append_training_item(index, log_ooseed, ooseed_file)
-            index += 1
-        self.test_indices += range(index, self.sr_vocab_size) 
-        logging.info(
-            '{} of {} words in sr embedding added to the training sample\noov: {}'.format(
-                self.train_collected, index, self.oov))
-        logging.info('filtered out of source embedding:\t'+'; '.join(
-            [word.encode('utf8') for word in self.oosr[:20]]))
-        logging.info('out of target embedding:\t'+'; '.join(
-            [word.encode('utf8') for word in self.ootg[:20]]))
-        logging.info('fitting model')
-        self.model.fit(np.array(self.sr_train), np.array(self.tg_train))
-        if trans_model_filen:
-            pickle.dump((self.test_indices, self.model), open(
-                trans_model_filen, mode='wb'))
-
-        def train_mem(self):
-            with open(self.embed_filens['sr']) as sr_embed_f:
-                train_size = 0
-                for line in sr_embed_f:
-                    cells = line.strip().split(' ')
-                    sr_word = cells[0]
-                    sr_vec = np.array(float(coord) for coord in cells[1:])
-                    if train_size < self.train_needed:
-                        if self.sr_words in self.seed_dict:
-                            train_size += 1
-                            self.append_training_item(sr_word, sr_vec=sr_vec)
-                        else:
-                            self.embeds['sr'][sr_word] = sr_vec
-                    else:
-                        self.model.fit(np.array(self.sr_train),
-                                       np.array(self.tg_train))
-
+    def get_training_data(self):
+        logging.info('collecting training data')
+        train_collected = 0
+        self.tg_vocab = set(self.tg_index.itervalues())
+        for line in self.sr_embed_f:
+            sr_word, sr_vec = self.read_word_and_vec(line)
+            if train_collected < self.train_needed:
+                if sr_word in self.seed_dict:
+                    train_collected += 1
+                    if not train_collected % 1000:
+                        logging.debug(
+                            '{} training items collected'.format(train_collected))
+                    self.append_training_item(sr_word, sr_vec=sr_vec)
+                else:
+                    self.sr_freq_not_seed.append((sr_word, sr_vec))
+            else:
+                break
+        logging.debug(
+            'out of target embed: {}'.format(
+                '; '.join(word.encode('utf8') for word in self.ootg[:20])))
+        if train_collected < self.train_needed:
+            raise Exception(
+                'Too few training pairs ({})'.format(train_collected))
 
     def restrict_embed(self, sr=False, tg=False):
+        # TODO At the moment, this function is not called.
         if sr:
             logging.info(
                 'restricting source embedding from {:,} items '.format(
@@ -335,9 +312,7 @@ class Vector2Dict:
                 *[(word, vec) 
                   for word, vec in zip(self.sr_words, self.sr_vecs) 
                   if word in self.hunspell_vocab['sr']])
-        self.sr_vocab_size = len(self.sr_words)
-        if sr:
-            logging.info('to {:,} items'.format(self.sr_vocab_size))
+            logging.info('to {:,} items'.format(len(self.sr_words)))
         if tg:
             logging.info(
                 'restricting target embedding from {:,} items '.format(
@@ -346,21 +321,7 @@ class Vector2Dict:
                 *[(word, vec) 
                   for word, vec in zip(self.tg_words, self.tg_vecs) 
                   if word in self.hunspell_vocab['tg']])
-        self.tg_vocab_size = len(self.tg_words)
-        if tg:
-            logging.info('to {:,} items'.format(self.tg_vocab_size))
-
-    def get_part_argsorted(self, start, end, prec_at):
-        """
-        called by test_part()
-        """
-        sim_mx = self.guessed_vecs[start:end,:].dot(self.tg_vecs)
-        # TODO scipy.linalg.blas (3/5 time is spent with this line)
-        logging.debug('similarities computed')
-        rankmx = np.argsort(-sim_mx, axis=1)
-        logging.debug('target words ranked')
-        return zip(self.sr_words_test[start:end], sim_mx,
-                   self.guessed_norm_mx[start:end], rankmx)
+            logging.info('to {:,} items'.format(len(self.tg_words)))
 
     def prec_msg(self):
         if self.has_seed:
@@ -370,103 +331,81 @@ class Vector2Dict:
         else:
             logging.error('no gold data')
 
-    def gold_tg_word_with_rank(self, sr_word, tg_rank_row):
+    def eval_item_with_gold(self, sr_word, tg_rank_row):
         """
         Looks up the gold target word, computes its similarity rank to the
         computed target vector, and books precision.
         """
+        self.has_seed += 1
+        gold_tg_word = self.seed_dict[sr_word]
+        if gold_tg_word in self.tg_index.itervalues():
+            gold_rank = np.where(
+                tg_rank_row == self.tg_index[:gold_tg_word])[0][0]
+            if gold_rank < 5:
+                self.score_at_5 += 1
+                if gold_rank == 0:
+                    self.score_at_1 += 1
+        else:
+            gold_rank = ''
+        if self.has_seed == 1000:
+            logging.info(self.prec_msg())
+        self.finished = bool(
+            self.has_seed==self.train_needed 
+            if self.params.test_mode=='score' 
+            # This TODO if for not only measuring precision but collecting as
+            # many translations as you can. If sr embedding is properly
+            # chosen, no breaking is needed.
+            # else self.collected >= 100000)
+            else self.has_seed > 1000)
+        return gold_tg_word, gold_rank
+
+    def test_item(self, sr_word, sr_vec, prec_at=9):
         self.collected += 1
+        if not self.collected % 100:
+            logging.debug(
+                '{} translations collected, {} have reference translation'.format(
+                    self.collected, self.has_seed))
+        guessed_vec = self.model.predict(
+            sr_vec.reshape((1,-1))).astype('float32').reshape((-1))
+        guessed_norm = np.linalg.norm(guessed_vec)
+        sim_row = guessed_vec.dot(self.tg_vecs)
+        tg_rank_row = np.argsort(-sim_row)
         if sr_word in self.seed_dict:
-            self.has_seed += 1
-            gold_tg_word = self.seed_dict[sr_word]
-            gold_index_l = np.where(self.tg_words == gold_tg_word)[0]
-            if gold_index_l:
-                gold_rank = np.where(tg_rank_row == gold_index_l[0])[0][0]
-                if gold_rank < 5:
-                    self.score_at_5 += 1
-                    if gold_rank == 0:
-                        self.score_at_1 += 1
-            else:
-                gold_rank = ''
-            if self.has_seed == 1000:
-                logging.info(self.prec_msg())
-            self.finished = bool(
-                self.has_seed==self.train_needed 
-                if self.params.test_mode=='score' 
-                #else self.collected >= 100000)
-                else self.has_seed > 1000)
+            gold_tg_word, gold_rank = self.eval_item_with_gold(
+                sr_word, tg_rank_row)
         else:
             gold_tg_word = ''
             gold_rank = ''
             self.finished = False
-        return gold_tg_word, gold_rank
+        self.outfile.write('\t'.join([
+            sr_word, gold_tg_word, str(gold_rank),
+            '{0:.4}'.format(sim_row[tg_rank_row[0]]/guessed_norm)] + 
+            [self.tg_index.get(ind, 'OVERWRITTEN') for ind in tg_rank_row[:prec_at]]).encode(
+                    'utf8')+'\n')
 
-    def test_part(self, start, end, prec_at):
-        """
-        Tests a part of the test data. Test data is split to parts so that
-        similarity matrices fit into memory.
-        """
-        test_tuples = self.get_part_argsorted(start, end, prec_at)
-        logging.info('test tuples built')
-        for sr_word, sim_row, guessed_norm_row, tg_rank_row in test_tuples:
-            gold_tg_word, gold_rank = self.gold_tg_word_with_rank(
-                sr_word, tg_rank_row)
-            self.outfile.write('\t'.join([
-                sr_word, gold_tg_word, str(gold_rank),
-                '{0:.4}'.format(sim_row[tg_rank_row[0]]/guessed_norm_row)] + 
-                self.tg_words[
-                    np.array(tg_rank_row[:prec_at])].tolist()).encode(
-                        'utf8')+'\n')
-            if self.finished:
-                break
-
-    def get_part_size(self, test_size):
-        """
-        Used by collect_translations
-        """
-        # TODO
-        print resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        part_size = 160000000000
-        for denom_term in [self.sr_vecs_test.shape[1], self.tg_vecs.shape[0],
-                           self.tg_vecs.shape[1]]:
-            part_size /= denom_term
-        logging.info('testing in {} parts'.format(
-            (test_size / part_size) + 1))
-        return part_size
-
-    def collect_translations(self, prec_at=9):
-        """
-        Guessed target vectors for the whole test sample are computed in one
-        step, other testing computations are done in parts of length 
-        part_size.
-        """
-        test_size = len(self.sr_words_test)
-        logging.info('test sample size {}'.format(test_size))
-        logging.info('computing target vector estimates')
-        self.guessed_vecs = self.model.predict(self.sr_vecs_test)
-        self.guessed_norm_mx = np.apply_along_axis(
-            np.linalg.norm, 1, self.guessed_vecs)
-        self.tg_words = np.array(self.tg_words)
+    def collect_translations(self):
         tg_norms = np.apply_along_axis(
             np.linalg.norm, 1, self.tg_vecs).reshape(-1,1)
-        self.tg_vecs = (self.tg_vecs/tg_norms).T
+        self.tg_vecs /= tg_norms
+        self.tg_vecs = self.tg_vecs.T
         self.collected = 0
         self.has_seed = 0
-        self.score_at_1 = 0
         self.score_at_5 = 0
-        part_size = self.get_part_size(test_size)
-        for ind in xrange(0, test_size, part_size):
-            end = min(ind + part_size, test_size)
-            self.test_part(ind, end, prec_at=prec_at)
+        self.score_at_1 = 0
+        if self.params.translate_oov:
+            for sr_word, sr_vec in self.sr_freq_not_seed:
+                self.test_item(sr_word, sr_vec)
+        logging.info('Frequent words without sedd translation {}'.format(
+                         'translated' if self.params.translate_oov else 'skipped'))
+        for line in self.sr_embed_f:
+            sr_word, sr_vec = self.read_word_and_vec(line)
+            self.test_item(sr_word, sr_vec)
             if self.finished:
                 break
-            logging.info(
-                '{} items (with {} gold translations) collected'.format(
-                    #float(ind)/test_size,
-                    self.collected,
-                    self.has_seed))
+        logging.info(self.prec_msg())
 
     def score_translations(self):
+        # TODO rewrite using the bidict
         sr_words, sr_vecs, tg_words, tg_vecs = zip(*[ 
             (sr_word, self.embeds['sr'][sr_word], tg_word, self.embeds[
                 'tg'][tg_word])
@@ -483,68 +422,47 @@ class Vector2Dict:
             self.outfile.write('\t'.join([sr_word, tg_word,
                                            str(sim)]).encode('utf8')+'\n')
 
-    def test(self, measure='cos'):
-        logging.info('starting testing')
-        if self.train_on_full:
-            self.test_indices = range(self.sr_vocab_size)
-        self.sr_words_test = np.array(self.sr_words)[self.test_indices]
-        self.sr_vecs_test = np.array(self.sr_vecs)[self.test_indices]
-        del self.sr_vecs
-        if self.params.test_mode == 'collect':
-            del self.embeds
-            self.collect_translations()
-        elif self.params.test_mode == 'score':
-            self.score_translations()
-
     def biling_main(self):
         """
         This is the main function on the two bilingual tasks, 'collect' and
         'score'.
         """
-        self.embeds = {}
-        self.sr_words, self.sr_vecs, self.embeds['sr'] = self.load_embed(
-            self.embed_filens['sr'])
-        self.tg_words, self.tg_vecs, self.embeds['tg'] = self.load_embed(
-            self.embed_filens['tg'])
-        self.read_hunspell_vocab()
-        self.restrict_embed(
-            sr='s' in self.params.restrict_embed,
-            tg='t' in self.params.restrict_embed)
+        self.tg_vecs, self.tg_index = self.load_embed( 
+            self.embed_filens['tg'], type_='mx_and_bidict')
         self.read_seed_dict()
         self.model = LinearRegression() # TODO parametrize (penalty, ...)
         # TODO self.model = ElasticNet(), Lasso, Ridge, SVR
         # http://stackoverflow.com/questions/19650115/which-scikit-learn-tools-can-handle-multivariate-output
         # TODO crossvalidation
         logging.info(str(self.model))
-        self.train()
-        self.test()
+        self.sr_embed_f = open(self.embed_filens['sr'])
+        self.sr_embed_f.readline() # The header is skipped.
+        self.sr_train = []
+        self.tg_train = []        
+        self.sr_freq_not_seed = []
+        self.oov = defaultdict(int)
+        self.oosr = []
+        self.ootg = []
+        self.get_training_data()
+        logging.info('fitting model')
+        self.model.fit(np.array(self.sr_train), np.array(self.tg_train))
+        logging.info('testing')
+        if self.params.test_mode == 'collect':
+            self.collect_translations()
+        elif self.params.test_mode == 'score':
+            self.score_translations()
 
-    def collect_main(self):
-        self.embeds['tg'] = self.load_embed(self.embed_filens['tg'],
-                                            type_='embed')
-        self.read_seed_dict()
-        self.model = LinearRegression()
-
-    def main(self):
-        self.embed_filens = {
-            'sr': self.params.source_embedding, 
-            'tg': self.params.target_embedding}
-        if self.params.test_mode == 'accuracy':
-            model = self.load_embed(self.embed_filens['sr'],
-                                    type_='model')
-            lower = False
-            # TODO
-            for label in ['+l', '1l']:
-                if label in self.embed_filens['sr']:
-                    lower = True
-            return model.accuracy( 
-                os.path.expanduser('~') +
-                '/project/efnilex/vector/test/hu/questions-words.txt',
-                lower=lower)
-        elif self.params.test_mode == 'vocab':
-            self.load_embed(self.embed_filens['sr'], write_vocab=True)
-        else:
-            self.biling_main()
+    def accuracy_main(self):
+        model = self.load_embed(self.embed_filens['sr'], type_='model')
+        lower = False
+        # TODO
+        for label in ['+l', '1l']:
+            if label in self.embed_filens['sr']:
+                lower = True
+        return model.accuracy( 
+            os.path.expanduser('~') +
+            '/project/efnilex/vector/test/hu/questions-words.txt',
+            lower=lower)
 
 
 def parse_args():
@@ -555,17 +473,16 @@ def parse_args():
     parser.add_argument(
         '-l', '--log-to-screen', action='store_true', dest='log_to_err')
     parser.add_argument(
+        "-s", "--source-embedding", dest='source_embedding', type=str)
+    parser.add_argument(
+        "-t", "--target-embedding", dest='target_embedding', type=str)
+    parser.add_argument(
         "-d", "--seed-dict", type=str, 
-        #choices=["wikt2dict", "eniko", "vonyo", "opus"],
         default="wikt2dict",
         dest='seed_name')
     parser.add_argument(
         '-p', '--pair', default='en_hu', 
         help='language pair (in alphabetical order)')
-    parser.add_argument(
-        "-s", "--source-embedding", dest='source_embedding', type=str)
-    parser.add_argument(
-        "-t", "--target-embedding", dest='target_embedding', type=str)
     parser.add_argument(
         "-r", "--reverse", 
         action='store_true',
@@ -573,13 +490,16 @@ def parse_args():
     parser.add_argument(
         '-o', '--output', dest='outfilen')
     parser.add_argument(
+        '-c', '--restrict-embed', choices = ['n', 's', 't', 'st'],
+        dest='restrict_embed', default='n')
+    parser.add_argument(
         "-f", "--forced-stem", dest='forced_stem', action='store_true',
         help='consider only "forced" stems')
     parser.add_argument(
-        '-c', '--restrict-embed', choices = ['n', 's', 't', 'st'],
-        dest='restrict_embed', default='n')
+        "-v", "--translate_oov", action='store_true', 
+        help='Translate frequent words without a seed dictionary translation')
     return parser.parse_args()
 
 
 if __name__=='__main__':
-    Vector2Dict(parse_args()).main()
+    Vector2Dict(parse_args())#', 'tottime')

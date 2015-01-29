@@ -204,7 +204,7 @@ class Vector2Dict:
             logging.info('{} seed pairs'.format(len(self.seed_dict)))
         else:
             logging.warning('seed does not exist: '+filen)
-        logging.debug(self.seed_dict.items()[:20])
+        #logging.debug(self.seed_dict.items()[:20])
         seed_vocab = set(self.seed_dict.keys())
         # TODO .intersection( set(self.sr_words))  
         if len(seed_vocab) < self.train_needed:
@@ -306,7 +306,7 @@ class Vector2Dict:
 
     def get_nearpy_engine(self, top_n=10):
         rbps = []
-        for _ in xrange(10):
+        for _ in xrange(1):
             # TODO 
             #   less or more projections
             #   other types of projections
@@ -314,6 +314,9 @@ class Vector2Dict:
         dim = self.tg_vecs.shape[1]
         self.engine = Engine(dim, lshashes=rbps, vector_filters=[NearestFilter(top_n)])
         for ind, vec in enumerate(self.tg_vecs):
+            if not ind % 100000:
+                logging.info(
+                    '{} target words added to nearpy engine'.format(ind))
             self.engine.store_vector(vec, ind)
 
     def restrict_embed(self, sr=False, tg=False):
@@ -367,9 +370,8 @@ class Vector2Dict:
             self.has_seed==self.train_needed 
             if self.params.test_mode=='score' 
             # This TODO if for not only measuring precision but collecting as
-            # many translations as you can. If sr embedding is properly
-            # chosen, no breaking is needed.
-            # else self.collected >= 100000)
+            # many translations possible. If sr embedding is properly chosen,
+            # no breaking is needed. elif self.collected >= 100000)
             else self.has_seed > 1000)
         return gold_tg_word, gold_rank
 
@@ -383,20 +385,19 @@ class Vector2Dict:
         guessed_vec = self.model.predict(
             sr_vec.reshape((1,-1))).astype('float32').reshape((-1))
         guessed_norm = np.linalg.norm(guessed_vec)
-        _, tg_rank_row, sim_row = zip(
-            *self.engine.neighbours(guessed_vec))
-        #sim_row = guessed_vec.dot(self.tg_vecs)
-        #tg_rank_row = np.argsort(-sim_row)
         if sr_word in self.seed_dict:
+            sim_row = guessed_vec.dot(self.tg_vecs)
+            tg_rank_row = np.argsort(-sim_row)
             gold_tg_word, gold_rank = self.eval_item_with_gold(
                 sr_word, tg_rank_row)
         else:
+            _, tg_rank_row, sim_row = zip(*self.engine.neighbours(guessed_vec))
             gold_tg_word = ''
             gold_rank = ''
             self.finished = False
         self.outfile.write('\t'.join([
             sr_word, gold_tg_word, str(gold_rank),
-            '{0:.4}'.format(sim_row[tg_rank_row[0]]/guessed_norm)] + 
+            '{0:.4}'.format(sim_row[0]/guessed_norm)] + 
             [self.tg_index.get(ind, 'OVERWRITTEN') for ind in tg_rank_row[:prec_at]]).encode(
                     'utf8')+'\n')
 
@@ -413,7 +414,7 @@ class Vector2Dict:
         if self.params.translate_oov:
             for sr_word, sr_vec in self.sr_freq_not_seed:
                 self.test_item(sr_word, sr_vec)
-        logging.info('Frequent words without sedd translation {}'.format(
+        logging.info('Frequent words without seed translation {}'.format(
                          'translated' if self.params.translate_oov else 'skipped'))
         for line in self.sr_embed_f:
             sr_word, sr_vec = self.read_word_and_vec(line)

@@ -4,13 +4,15 @@ import logging
 import argparse
 from collections import defaultdict
 import re
-import cProfile
 
 from bidict import bidict
 from nltk.corpus import stopwords
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from gensim.models import Word2Vec
+from nearpy import Engine
+from nearpy.hashes import RandomBinaryProjections
+from nearpy.filters import NearestFilter
 
 class Vector2Dict:
     """
@@ -302,6 +304,18 @@ class Vector2Dict:
             raise Exception(
                 'Too few training pairs ({})'.format(train_collected))
 
+    def get_nearpy_engine(self, top_n=10):
+        rbps = []
+        for _ in xrange(10):
+            # TODO 
+            #   less or more projections
+            #   other types of projections
+            rbps.append(RandomBinaryProjections('rbp', 10))
+        dim = self.tg_vecs.shape[1]
+        self.engine = Engine(dim, lshashes=rbps, vector_filters=[NearestFilter(top_n)])
+        for ind, vec in enumerate(self.tg_vecs):
+            self.engine.store_vector(vec, ind)
+
     def restrict_embed(self, sr=False, tg=False):
         # TODO At the moment, this function is not called.
         if sr:
@@ -359,6 +373,7 @@ class Vector2Dict:
             else self.has_seed > 1000)
         return gold_tg_word, gold_rank
 
+
     def test_item(self, sr_word, sr_vec, prec_at=9):
         self.collected += 1
         if not self.collected % 100:
@@ -368,8 +383,10 @@ class Vector2Dict:
         guessed_vec = self.model.predict(
             sr_vec.reshape((1,-1))).astype('float32').reshape((-1))
         guessed_norm = np.linalg.norm(guessed_vec)
-        sim_row = guessed_vec.dot(self.tg_vecs)
-        tg_rank_row = np.argsort(-sim_row)
+        _, tg_rank_row, sim_row = zip(
+            *self.engine.neighbours(guessed_vec))
+        #sim_row = guessed_vec.dot(self.tg_vecs)
+        #tg_rank_row = np.argsort(-sim_row)
         if sr_word in self.seed_dict:
             gold_tg_word, gold_rank = self.eval_item_with_gold(
                 sr_word, tg_rank_row)
@@ -384,6 +401,7 @@ class Vector2Dict:
                     'utf8')+'\n')
 
     def collect_translations(self):
+        self.get_nearpy_engine()
         tg_norms = np.apply_along_axis(
             np.linalg.norm, 1, self.tg_vecs).reshape(-1,1)
         self.tg_vecs /= tg_norms

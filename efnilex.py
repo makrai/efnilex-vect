@@ -21,35 +21,32 @@ class Vector2Dict:
     mapping between the two vector spaces following Mikolov et al (2013
     Exploiting...).
     """
-    def init_logging(self, log_to_err):
+    def config_logger(self, log_to_err):
         level = logging.DEBUG
         format_ = "%(asctime)s : %(module)s (%(lineno)s) - %(levelname)s - %(message)s"
         if log_to_err:
             logging.basicConfig(level=level, format=format_) 
         else:
             filename = self.output_dir + 'log/' + self.params.outfilen
-            try:
+            if os.path.isfile(filename):
                 os.remove(filename)
-            except:
-                pass
             logging.basicConfig(filename=filename, level=level,
                                 format=format_) 
 
-    def init_collecting(self, train_needed):
+    def init_collecting(self):
         out_dict_filen = self.output_dir + self.params.outfilen
         if os.path.isfile(out_dict_filen): 
             raise Exception(
                 'file for collected translation pairs exists {}'.format(
                     out_dict_filen))
-        self.init_logging(self.params.log_to_err)
+        self.config_logger(self.params.log_to_err)
+        logging.debug(self.params)
         self.outfile = open(out_dict_filen, mode='w')
-        self.train_needed = train_needed
-        if not self.train_needed:
-            if self.params.test_mode == 'collect':
-                self.train_needed = 5000  
-            else:
-                # This branch is for test mode 'score'
-                self.train_needed = 20000
+        if self.params.test_mode == 'collect':
+            self.train_needed = 5000  
+        else:
+            # This branch is for test mode 'score'
+            self.train_needed = 20000
         self.test_indices = []
 
     def strip_embed_filen(self, filen):
@@ -58,7 +55,7 @@ class Vector2Dict:
             filen = filen.split('.'+ext)[0]
         return filen
 
-    def __init__(self, params, train_needed=None):
+    def main(self, params):
         # TODO config file
         self.vecnil_dir = '/mnt/store/home/makrai/project/efnilex/vector/'
         self.params = params
@@ -83,14 +80,14 @@ class Vector2Dict:
             'sr': self.params.source_embedding, 
             'tg': self.params.target_embedding}
         if self.params.test_mode == 'accuracy':
-            self.init_logging(self.params.log_to_err)
+            self.config_logger(self.params.log_to_err)
             self.accuracy_main()
         elif self.params.test_mode == 'vocab':
-            self.init_logging(True)
+            self.config_logger(True)
             self.load_embed(self.embed_filens['sr'], write_vocab=True)
         else: 
             # This branch is for test_modes 'collect' and 'score'
-            self.init_collecting(train_needed)
+            self.init_collecting()
             self.biling_main()
 
     def read_hunspell_vocab(self):
@@ -113,6 +110,9 @@ class Vector2Dict:
                         break
                 else:
                     hv_filen = embed_filen+'.hunspell'
+                if not os.path.isfile(hv_filen):
+                    raise Exception(
+                        'no restricted vocab file for {}'.format(half))
                 logging.info(
                     'reading filtered vocabulary for {} from {}'.format(
                         half, hv_filen))
@@ -159,23 +159,32 @@ class Vector2Dict:
     def get_seed_dict_filen(self, fallback):
         # TODO config file
         if self.params.seed_name=='wikt2dict':
-            return os.path.expanduser(
+            filen = os.path.expanduser(
                 "~")+'/repo/wikt2dict/dat/{}_{}'.format(
                     self.params.pair,
                     'triang' if fallback else 'direct')
         elif self.params.seed_name=='opus':
-            return os.path.expanduser(
+            filen = os.path.expanduser(
                 '~')+'/project/efnilex/data/opus/{}{}.dic'.format(
                     self.params.pair.replace('_', '-'),
                     '_big' if fallback else '_small')
         elif self.params.seed_name=='eniko':
-            return os.path.expanduser(
+            filen = os.path.expanduser(
                 "~")+'/project/efnilex/data/dict/eniko/{}/{}.gpp'.format(
                     self.params.pair, self.params.pair)
         elif self.params.seed_name=='vonyo':
-            return '/home/zseder/Proj/NPAlign/Data/Dicts/vonyo_en_hu.txt'
+            filen = '/home/zseder/Proj/NPAlign/Data/Dicts/vonyo_en_hu.txt'
         else:
-            return self.params.seed_name
+            filen = self.params.seed_name
+        if os.path.isfile(filen):
+            logging.info('reading seed dictionary from '+filen)
+            return filen
+        else:
+            logging.warn('no seed dict {}'.format(filen)) 
+            if fallback:
+                raise Exception('no seed dict {}'.format(filen))
+            else:
+                return None
 
     def read_seed_dict(self, fallback=False):
         columns = [1,3] if 'wikt2dict' in self.params.seed_name else range(2)
@@ -184,8 +193,7 @@ class Vector2Dict:
         filen = self.get_seed_dict_filen(fallback)
         if not fallback:
             self.seed_dict = {}
-        if os.path.isfile(filen):
-            logging.info('reading seed dictionary from '+filen)
+        if filen:
             with open(filen) as file_:
                 for line in file_.readlines():
                     separator = '\t' if '\t' in line else ' '
@@ -201,12 +209,10 @@ class Vector2Dict:
                         # Wiktionary.
                         continue
                     self.seed_dict[sr_word] = tg_word
-            logging.info('{} seed pairs'.format(len(self.seed_dict)))
-        else:
-            logging.warning('seed does not exist: '+filen)
-        #logging.debug(self.seed_dict.items()[:20])
+            logging.info('{} seed pairs e.g. {}'.format(
+                len(self.seed_dict),
+                self.seed_dict.items()[:5]))
         seed_vocab = set(self.seed_dict.keys())
-        # TODO .intersection( set(self.sr_words))  
         if len(seed_vocab) < self.train_needed:
             if fallback:
                 logging.error('too few training pairs')
@@ -250,12 +256,13 @@ class Vector2Dict:
                     enumerate(words))
 
     def write_vocab(self, efilen, words):
-            vfilen = efilen  +'.vocab'
-            with open(vfilen, mode='w') as vocab_file:
-                for word in words:
-                    vocab_file.write(word.encode('utf8')+'\n')
-            logging.info(
-                'vocab written to {}'.format(vfilen))
+        #TODO
+        vfilen = efilen  +'.vocab'
+        with open(vfilen, mode='w') as vocab_file:
+            for word in words:
+                vocab_file.write(word.encode('utf8')+'\n')
+        logging.info(
+            'vocab written to {}'.format(vfilen))
 
     def append_training_item(self, sr_word, sr_vec=None, log_ooseed=False,
                              ooseed_file=None):
@@ -374,7 +381,6 @@ class Vector2Dict:
             # no breaking is needed. elif self.collected >= 100000)
             else self.has_seed > 1000)
         return gold_tg_word, gold_rank
-
 
     def test_item(self, sr_word, sr_vec, prec_at=9):
         self.collected += 1
@@ -521,4 +527,4 @@ def parse_args():
 
 
 if __name__=='__main__':
-    Vector2Dict(parse_args())#', 'tottime')
+    Vector2Dict().main(parse_args())

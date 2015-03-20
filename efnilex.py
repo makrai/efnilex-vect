@@ -8,11 +8,13 @@ import re
 from bidict import bidict
 from nltk.corpus import stopwords
 import numpy as np
+from scipy.spatial.distance import cosine
 from sklearn.linear_model import LinearRegression
 from gensim.models import Word2Vec
 from nearpy import Engine
 from nearpy.hashes import RandomBinaryProjections
 from nearpy.filters import NearestFilter
+from nearpy.distances import AngularDistance
 
 class Vector2Dict:
     """
@@ -70,12 +72,13 @@ class Vector2Dict:
                 self.params.outfilen = self.strip_embed_filen(
                     self.params.source_embedding)
             else:
-                self.params.outfilen = '{}__{}__{}_{}f_c{}'.format(
+                self.params.outfilen = '{}__{}__{}_{}f_c{}_o{}'.format(
                     self.strip_embed_filen(self.params.source_embedding),
                     self.strip_embed_filen(self.params.target_embedding),
                     self.params.seed_name.split('/')[-1], 
                     int(self.params.forced_stem),
-                    self.params.restrict_embed)
+                    self.params.restrict_embed,
+                    int(self.params.translate_oov))
         self.embed_filens = {
             'sr': self.params.source_embedding, 
             'tg': self.params.target_embedding}
@@ -106,7 +109,7 @@ class Vector2Dict:
             if half[0] in self.params.restrict_embed:
                 for corp_name in ['webcorp', 'slwac2.0', 'Lithuanian']:
                     if corp_name in embed_filen:
-                        hv_filen = self.vecnil_dir+'hunspell/'+corp_name
+                        hv_filen = self.vecnil_dir+'target_vocab/'+corp_name
                         break
                 else:
                     hv_filen = embed_filen+'.hunspell'
@@ -319,7 +322,8 @@ class Vector2Dict:
             #   other types of projections
             rbps.append(RandomBinaryProjections('rbp', 10))
         dim = self.tg_vecs.shape[1]
-        self.engine = Engine(dim, lshashes=rbps, vector_filters=[NearestFilter(top_n)])
+        self.engine = Engine(dim, lshashes=rbps, distance=AngularDistance(),
+                             vector_filters=[NearestFilter(top_n)])
         for ind, vec in enumerate(self.tg_vecs):
             if not ind % 100000:
                 logging.info(
@@ -390,22 +394,26 @@ class Vector2Dict:
                     self.collected, self.has_seed))
         guessed_vec = self.model.predict(
             sr_vec.reshape((1,-1))).astype('float32').reshape((-1))
-        guessed_norm = np.linalg.norm(guessed_vec)
         if sr_word in self.seed_dict:
             sim_row = guessed_vec.dot(self.tg_vecs)
             tg_rank_row = np.argsort(-sim_row)
             gold_tg_word, gold_rank = self.eval_item_with_gold(
                 sr_word, tg_rank_row)
         else:
-            _, tg_rank_row, sim_row = zip(*self.engine.neighbours(guessed_vec))
+            _, tg_rank_row, _ = zip(*self.engine.neighbours(guessed_vec))
             gold_tg_word = ''
             gold_rank = ''
             self.finished = False
-        self.outfile.write('\t'.join([
-            sr_word, gold_tg_word, str(gold_rank),
-            '{0:.4}'.format(sim_row[0]/guessed_norm)] + 
-            [self.tg_index.get(ind, 'OVERWRITTEN') for ind in tg_rank_row[:prec_at]]).encode(
-                    'utf8')+'\n')
+        cos_dist = cosine(guessed_vec, self.tg_vecs.T[tg_rank_row[0]])
+        self.outfile.write(
+            '{sr_word}\t{gold_tg_word}\t{gold_rank}\t{cos_dist:.4}\t{tg_words}\n'.format(
+                sr_word=sr_word.encode('utf8'), 
+                gold_tg_word=gold_tg_word.encode('utf8'), 
+                gold_rank=gold_rank,
+                cos_dist=cos_dist,
+                tg_words=' '.join( 
+                    self.tg_index.get(ind, 'OVERWRITTEN')
+                    for ind in tg_rank_row[:prec_at]).encode('utf8')))
 
     def collect_translations(self):
         self.get_nearpy_engine()

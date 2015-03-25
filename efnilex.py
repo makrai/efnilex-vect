@@ -359,7 +359,7 @@ class Vector2Dict:
         else:
             logging.error('no gold data')
 
-    def eval_item_with_gold(self, sr_word, tg_rank_row):
+    def eval_item_with_gold(self, sr_word, tg_indices_ranked):
         """
         Looks up the gold target word, computes its similarity rank to the
         computed target vector, and books precision.
@@ -368,7 +368,7 @@ class Vector2Dict:
         gold_tg_word = self.seed_dict[sr_word]
         if gold_tg_word in self.tg_index.itervalues():
             gold_rank = np.where(
-                tg_rank_row == self.tg_index[:gold_tg_word])[0][0]
+                tg_indices_ranked == self.tg_index[:gold_tg_word])[0][0]
             if gold_rank < 5:
                 self.score_at_5 += 1
                 if gold_rank == 0:
@@ -386,25 +386,39 @@ class Vector2Dict:
             else self.has_seed > 1000)
         return gold_tg_word, gold_rank
 
+    def find_neighbors(self, sr_word, sr_vec):
+        guessed_vec = self.model.predict(sr_vec.reshape((1,-1))).astype(
+            'float32').reshape((-1))
+        _, tg_indices_ranked, _ = zip(*self.engine.neighbours(guessed_vec))
+        for rank, tg_index in enumerate(tg_indices_ranked):
+            self.reved_neighbors[tg_index].add((rank, -cosine, sr_word))
+
+    def write_translations(self):
+        for tg_index, neighbors in self.reved_neighbors.iteritems():
+            tg_word = self.tg_words[tg_index]
+            sr_words = sorted(neighbors)
+            self.outfile.write(
+                '{sr_word}\t{gold_tg_word}\t{gold_rank}\t{cos_dist:.4}\t{tg_words}\n'.format())
+
     def test_item(self, sr_word, sr_vec, prec_at=9):
         self.collected += 1
         if not self.collected % 100:
             logging.debug(
                 '{} translations collected, {} have reference translation'.format(
                     self.collected, self.has_seed))
-        guessed_vec = self.model.predict(
-            sr_vec.reshape((1,-1))).astype('float32').reshape((-1))
+        guessed_vec = self.model.predict(sr_vec.reshape((1,-1))).astype(
+            'float32').reshape((-1))
         if sr_word in self.seed_dict:
             sim_row = guessed_vec.dot(self.tg_vecs)
-            tg_rank_row = np.argsort(-sim_row)
+            tg_indices_ranked = np.argsort(-sim_row)
             gold_tg_word, gold_rank = self.eval_item_with_gold(
-                sr_word, tg_rank_row)
+                sr_word, tg_indices_ranked)
         else:
-            _, tg_rank_row, _ = zip(*self.engine.neighbours(guessed_vec))
+            _, tg_indices_ranked, _ = zip(*self.engine.neighbours(guessed_vec))
             gold_tg_word = ''
             gold_rank = ''
             self.finished = False
-        cos_dist = cosine(guessed_vec, self.tg_vecs.T[tg_rank_row[0]])
+        cos_dist = cosine(guessed_vec, self.tg_vecs.T[tg_indices_ranked[0]])
         self.outfile.write(
             '{sr_word}\t{gold_tg_word}\t{gold_rank}\t{cos_dist:.4}\t{tg_words}\n'.format(
                 sr_word=sr_word.encode('utf8'), 
@@ -413,7 +427,7 @@ class Vector2Dict:
                 cos_dist=cos_dist,
                 tg_words=' '.join( 
                     self.tg_index.get(ind, 'OVERWRITTEN')
-                    for ind in tg_rank_row[:prec_at]).encode('utf8')))
+                    for ind in tg_indices_ranked[:prec_at]).encode('utf8')))
 
     def collect_translations(self):
         self.get_nearpy_engine()
@@ -425,6 +439,7 @@ class Vector2Dict:
         self.has_seed = 0
         self.score_at_5 = 0
         self.score_at_1 = 0
+        self.reved_neighbors = defaultdict(set)
         if self.params.translate_oov:
             for sr_word, sr_vec in self.sr_freq_not_seed:
                 self.test_item(sr_word, sr_vec)

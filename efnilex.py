@@ -1,6 +1,7 @@
 import argparse
 import codecs
 from collections import defaultdict
+from itertools import izip
 import logging
 import os.path
 import pickle
@@ -14,7 +15,7 @@ from gensim.models import Word2Vec
 from nearpy import Engine
 from nearpy.hashes import RandomBinaryProjections
 from nearpy.filters import NearestFilter
-from nearpy.distances import AngularDistance
+from nearpy.distances import CosineDistance
 
 
 class LinearTranslator:
@@ -106,11 +107,13 @@ class LinearTranslator:
                     self.args.restrict_embed,
                     int(self.args.trans_freq_oov))
 
-    def strip_embed_filen(self, filen):
-        path, filen = os.path.split(filen)
-        filen, ext = os.path.splitext(filen)
-        assert ext[1:] in ['w2v', 'gensim', 'gz', 'bin', 'pkl']
-        return filen
+    def strip_embed_filen(self, old_filen):
+        path, new_filen = os.path.split(old_filen)
+        new_filen, ext = os.path.splitext(new_filen)
+        if ext[1:] in ['w2v', 'gensim', 'gz', 'bin', 'pkl', 'txt']:
+            return self.strip_embed_filen(new_filen)
+        else:
+            return old_filen
 
     def init_biling(self):
         out_dict_filen = self.output_dir + self.args.outfilen
@@ -146,6 +149,7 @@ class LinearTranslator:
         This is the main function on the two bilingual tasks, 'collect' and
         'score'.
         """
+        self.sr_model = self.load_embed(self.args.sr_langm_filen)
         self.tg_model = self.load_embed(self.args.tg_langm_filen)
         # tg_model.syn0.astype('float32', casting='same_kind', copy=False)
         self.tg_index = bidict(enumerate(self.tg_model.index2word))
@@ -153,12 +157,18 @@ class LinearTranslator:
         self.get_trans_model()
         self.sr_embed_f = codecs.open(self.args.sr_langm_filen,
                                       encoding='utf-8')
-        self.get_training_data()
+        sr_position, ootg = self.get_training_data()
+        logging.debug(
+            'out of target embed: {}'.format(
+                '; '.join(word.encode('utf8') for word in ootg[:20])))
+        if not sr_position:
+            raise Exception(
+                'Too few training pairs ({})'.format(train_collected))
         logging.info('fitting model')
         self.trans_model.fit(np.array(self.sr_train), np.array(self.tg_train))
         logging.info('testing')
         if self.args.mode == 'collect':
-            self.collect_main()
+            self.collect_main(sr_position)
         elif self.args.mode == 'score':
             self.score_main()
 
@@ -221,13 +231,14 @@ class LinearTranslator:
 
     def get_training_data(self):
         self.sr_train = []
+        self.sr_position = 0
         self.tg_train = []        
         self.sr_freq_not_seed = []
         ootg = []
         train_collected = 0
-        self.sr_embed_f.readline() # The header is skipped.
-        for line in self.sr_embed_f:
-            sr_word, sr_vec = self.read_word_and_vec(line)
+        #self.sr_embed_f.readline() # The header is skipped.
+        for i, (sr_word, sr_vec) in enumerate(izip(self.sr_model.syn0,
+                                                   self.sr_model.index2word)):
             if train_collected < self.train_needed:
                 if sr_word in self.seed_dict:
                     if not train_collected % 1000:
@@ -246,13 +257,10 @@ class LinearTranslator:
                 else:
                     self.sr_freq_not_seed.append((sr_word, sr_vec))
             else:
-                break
-        logging.debug(
-            'out of target embed: {}'.format(
-                '; '.join(word.encode('utf8') for word in ootg[:20])))
-        if train_collected < self.train_needed:
-            raise Exception(
-                'Too few training pairs ({})'.format(train_collected))
+                return i, ootg
+        else:
+            return None, ootg
+
 
     def get_nearpy_engine(self, top_n=10):
         rbps = []
@@ -262,7 +270,7 @@ class LinearTranslator:
             #   other types of projections
             rbps.append(RandomBinaryProjections('rbp', 10))
         dim = self.tg_model.syn0.shape[1]
-        self.engine = Engine(dim, lshashes=rbps, distance=AngularDistance(),
+        self.engine = Engine(dim, lshashes=rbps, distance=CosineDistance(),
                              vector_filters=[NearestFilter(top_n)])
         for ind, vec in enumerate(self.tg_model.syn0):
             if not ind % 100000:
@@ -270,7 +278,7 @@ class LinearTranslator:
                     '{} target words added to nearpy engine'.format(ind))
             self.engine.store_vector(vec, ind)
 
-    def collect_main(self):
+    def collect_main(self, sr_position):
         """
         First look for translations with gold data to see precision, and
         compute translations of frequent words without seed data after that.
@@ -281,8 +289,8 @@ class LinearTranslator:
         self.score_at_5 = 0
         self.score_at_1 = 0
         self.reved_neighbors = defaultdict(set)
-        for line in self.sr_embed_f:
-            sr_word, sr_vec = self.read_word_and_vec(line)
+        for sr_word, sr_vec in izip(self.sr_model.syn0,
+                                    self.sr_model.index2word)[sr_position:]:
             self.test_item(sr_word, sr_vec)
             if self.has_seed >= self.test_needed:
                 # TODO If the goal is not only measuring precision but
@@ -370,5 +378,6 @@ class LinearTranslator:
 
 
 if __name__=='__main__':
-    output_dir = '/mnt/store/home/makrai/project/efnilex/vector/'
+    output_dir = '/home/makrai/project/efnilex/vector'
+    # TODO '/mnt/store/home/makrai/project/efnilex/vector/'
     LinearTranslator(output_dir).main()

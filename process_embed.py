@@ -7,7 +7,7 @@ from gensim.models.word2vec import Word2Vec
 
 
 class EmbedInterProcessor():
-    def __init__():
+    def __init__(self):
         self.spaces = [
             '\xe2\x80\x80', '\xC2\xA0', '\xe2\x80\x81', '\xe2\x80\x82',
             '\xe2\x80\x83', '\xe2\x80\x84', '\xe2\x80\x85', '\xe2\x80\x86',
@@ -27,7 +27,7 @@ class EmbedInterProcessor():
             
     def main(self):
         for in_filen in sys.argv[1:]:
-            logging.info(in_filen)
+            logging.info('Processing {}'.format(in_filen))
             file_pref, ext = os.path.splitext(in_filen)
             if ext == '.pkl':
                 # this branch is for embeddings from
@@ -73,6 +73,9 @@ class EmbedInterProcessor():
                             out_file.write(' '.join(fields).encode('utf-8')+'\n')
                 logging.info(
                     'Now you need to add the header\n{} {}'.format(vocab_size, dim))
+            elif ext == '.bin':
+                m = Word2Vec.load_word2vec_format(in_filen, binary=True)
+                m.save(file_pref+'.gensim')
 
 
 if __name__ == '__main__':

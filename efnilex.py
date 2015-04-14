@@ -30,9 +30,9 @@ class LinearTranslator:
         self.output_dir = output_dir if output_dir else self.args.output_dir
         if not os.path.isdir(output_dir):
             os.mkdir(self.args.output_dir)
-        mode_dir = '{}/{}'.format(self.output_dir, self.args.mode)
-        if not os.path.isdir(mode_dir):
-            os.mkdir(mode_dir)
+        self.mode_dir = '{}/{}/'.format(self.output_dir, self.args.mode)
+        if not os.path.isdir(self.mode_dir):
+            os.mkdir(self.mode_dir)
         self.get_outfilen()
         self.config_logger(self.args.log_to_err)
         if self.args.mode in ['collect', 'score']:
@@ -49,7 +49,7 @@ class LinearTranslator:
             '-o', '--output-file-name', dest='outfilen', 
             help='prefix of names of output and log files without path')
         parser.add_argument(
-            '-l', '--log-to-screen', action='store_true', dest='log_to_err')
+            '-l', '--log-to-stderr', action='store_true', dest='log_to_err')
         parser.add_argument(
             "-s", "--source-lang-mod", dest='sr_langm_filen', type=str)
         parser.add_argument(
@@ -107,6 +107,7 @@ class LinearTranslator:
                     self.args.restrict_embed,
                     int(self.args.trans_freq_oov))
 
+
     def strip_embed_filen(self, old_filen):
         path, new_filen = os.path.split(old_filen)
         new_filen, ext = os.path.splitext(new_filen)
@@ -116,7 +117,7 @@ class LinearTranslator:
             return old_filen
 
     def init_biling(self):
-        out_dict_filen = self.output_dir + self.args.outfilen
+        out_dict_filen = self.mode_dir + self.args.outfilen
         if os.path.isfile(out_dict_filen): 
             raise Exception(
                 'file for collected translation pairs exists {}'.format(
@@ -163,7 +164,7 @@ class LinearTranslator:
                 '; '.join(word.encode('utf8') for word in ootg[:20])))
         if not sr_position:
             raise Exception(
-                'Too few training pairs ({})'.format(train_collected))
+                'Too few training pairs ({})'.format(sr_position))
         logging.info('fitting model')
         self.trans_model.fit(np.array(self.sr_train), np.array(self.tg_train))
         logging.info('testing')
@@ -177,8 +178,10 @@ class LinearTranslator:
             return Word2Vec.load(filen)
         elif re.search('polyglot-..\.pkl$', filen):
             model = Word2Vec()
-            model.index2word, model.syn0 = pickle.load(
-                open(filen, mode='rb'))
+            words_t, model.syn0 = pickle.load(open(filen, mode='rb'))
+            logging.info(
+                'Embedding with shape {} loaded'.format(model.syn0.shape))
+            model.index2word = list(words_t)
             return model
         elif re.search('webcorp/polyglot', filen):
             from polyglot2.polyglot2 import Polyglot
@@ -237,8 +240,8 @@ class LinearTranslator:
         ootg = []
         train_collected = 0
         #self.sr_embed_f.readline() # The header is skipped.
-        for i, (sr_word, sr_vec) in enumerate(izip(self.sr_model.syn0,
-                                                   self.sr_model.index2word)):
+        for i, (sr_word, sr_vec) in enumerate(izip(self.sr_model.index2word, 
+                                                   self.sr_model.syn0)):
             if train_collected < self.train_needed:
                 if sr_word in self.seed_dict:
                     if not train_collected % 1000:
@@ -262,16 +265,16 @@ class LinearTranslator:
             return None, ootg
 
 
-    def get_nearpy_engine(self, top_n=10):
-        rbps = []
+    def get_nearpy_engine(self):
+        hashes = []
         for _ in xrange(1):
             # TODO 
             #   less or more projections
             #   other types of projections
-            rbps.append(RandomBinaryProjections('rbp', 10))
+            hashes.append(RandomBinaryProjections('kutya', 10))
         dim = self.tg_model.syn0.shape[1]
-        self.engine = Engine(dim, lshashes=rbps, distance=CosineDistance(),
-                             vector_filters=[NearestFilter(top_n)])
+        self.engine = Engine(dim, lshashes=hashes, distance=CosineDistance(),
+                             vector_filters=[NearestFilter(self.neighbor_k)])
         for ind, vec in enumerate(self.tg_model.syn0):
             if not ind % 100000:
                 logging.info(
@@ -280,17 +283,18 @@ class LinearTranslator:
 
     def collect_main(self, sr_position):
         """
-        First look for translations with gold data to see precision, and
-        compute translations of frequent words without seed data after that.
+        First look for translations with gold data to see precision, then
+        compute translations of frequent words without seed translation.
         """
+        self.neighbor_k = 10
         self.get_nearpy_engine()
         self.collected = 0
         self.has_seed = 0
         self.score_at_5 = 0
         self.score_at_1 = 0
         self.reved_neighbors = defaultdict(set)
-        for sr_word, sr_vec in izip(self.sr_model.syn0,
-                                    self.sr_model.index2word)[sr_position:]:
+        for sr_word, sr_vec in izip(self.sr_model.index2word[sr_position:],
+                                    self.sr_model.syn0[sr_position:]):
             self.test_item(sr_word, sr_vec)
             if self.has_seed >= self.test_needed:
                 # TODO If the goal is not only measuring precision but
@@ -309,11 +313,11 @@ class LinearTranslator:
               for score in [ self.score_at_1, self.score_at_5]]))
         if self.args.trans_freq_oov:
             logging.info(
-                'Translating frequent words without seed data...')
+                'Translating frequent words without seed translation...')
             for sr_word, sr_vec in self.sr_freq_not_seed:
                 self.test_item(sr_word, sr_vec)
         else:
-            logging.info('Frequent words without seed data skipped.')
+            logging.info('Frequent words without seed translation skipped.')
 
     def test_item(self, sr_word, sr_vec, prec_at=9):
         self.collected += 1
@@ -323,51 +327,46 @@ class LinearTranslator:
                     self.collected, self.has_seed))
         guessed_vec = self.trans_model.predict(sr_vec.reshape((1,-1))).astype(
             'float32').reshape((-1))
-        if self.exact_neighbor:
-            gold_tg_word, gold_rank = self.eval_item_with_gold(sr_word,
-                                                               guessed_vec=guessed_vec)
+        if self.args.exact_neighbor:
+            # TODO Normalize computed vectors and tg embedding vectors.
+            distances = self.tg_model.syn0.dot(guessed_vec.reshape(
+                (-1,1))).reshape(-1)
+            tg_indices_ranked = np.argsort(-distances)
+            best_dist = cosine(self.tg_model.syn0[tg_indices_ranked[0]],
+                               guessed_vec)
         else:
-            _, tg_indices_ranked, distances = zip(*self.engine.neighbours(guessed_vec))
-            gold_tg_word, gold_rank = self.eval_item_with_gold(sr_word,
-                                                               tg_indices_ranked=tg_indices_ranked)
+            _, tg_indices_ranked, distances = zip(*self.engine.neighbors(
+                guessed_vec))
+            best_dist = distances[0]
+        gold = self.eval_item_with_gold(sr_word, tg_indices_ranked)
         self.outfile.write(
-            '{sr_word}\t{gold_tg_word}\t{gold_rank}\t{cos_dist:.4}\t{tg_words}\n'.format(
-                sr_word=sr_word.encode('utf-8'),
-                gold_tg_word=gold_tg_word.encode('utf-8'),
-                gold_rank=gold_rank,
-                cos_dist=distances[0],
-                tg_words=' '.join(self.tg_index[ind].encode('utf-8') 
-                          for ind in tg_indices_ranked[:prec_at])))
+            '{sr_w}\t{gold_tg_w}\t{gold_rank}\t{dist:.4}\t{tg_ws}\n'.format(
+                sr_w=sr_word.encode('utf-8'),
+                gold_tg_w=gold['word'].encode('utf-8'),
+                gold_rank=gold['rank'],
+                dist=best_dist,
+                tg_ws=' '.join(
+                    self.tg_index[ind].encode('utf-8') 
+                    for ind in tg_indices_ranked[:prec_at])))
 
-    def eval_item_with_gold(self, sr_word, tg_indices_ranked=None, guessed_vec=None):
+    def eval_item_with_gold(self, sr_word, tg_indices_ranked):#=None, guessed_vec=None):
         """
-        Looks up the gold target word, computes its similarity rank to the
-        computed target vector, and books precision.
-        # TODO TODO
-        tg_norms = np.apply_along_axis(
-            np.linalg.norm, 1, self.tg_model.syn0).reshape(-1,1)
-        self.tg_model.syn0 /= tg_norms
-        self.tg_model.syn0 = self.tg_model.syn0.T
+        Looks up the gold target word and books precision.
         """
+        gold = {
+            'word': '', 'rank': '>{}'.format(self.neighbor_k)}
         if sr_word in self.seed_dict:
-            gold_tg_word = self.seed_dict[sr_word]
+            gold['word'] = self.seed_dict[sr_word]
             self.has_seed += 1
-            if gold_tg_word in self.tg_index.itervalues():
-                if not tg_indices_ranked:
-                    sim_row = guessed_vec.dot(self.tg_model.syn0)
-                    tg_indices_ranked = np.argsort(-sim_row)
-                if self.tg_index[:gold_tg_word] in tg_indices_ranked:
-                    gold_rank = tg_indices_ranked.index(
-                        self.tg_index[:gold_tg_word])
-                    if gold_rank < 5:
+            if gold['word'] in self.tg_index.itervalues():
+                index = self.tg_index[:gold['word']]
+                if index in tg_indices_ranked:
+                    gold['rank'] = tg_indices_ranked.tolist().index(index)
+                    if gold['rank'] < 5:
                         self.score_at_5 += 1
-                        if gold_rank == 0:
+                        if gold['rank'] == 0:
                             self.score_at_1 += 1
-            else:
-                gold_rank = '>10' # TODO
-        else:
-            gold_tg_word, gold_rank = '', ''
-        return gold_tg_word, gold_rank
+        return gold
 
     def score_main(self):
         raise NotImplementedError

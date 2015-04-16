@@ -1,6 +1,8 @@
 import argparse
 import codecs
 from collections import defaultdict
+import cPickle
+import cProfile
 from itertools import izip
 import logging
 import os.path
@@ -9,7 +11,7 @@ import re
 
 from bidict import bidict
 import numpy as np
-from scipy.spatial.distance import cosine
+from scipy.spatial.distance import cosine, cdist
 from sklearn.linear_model import LinearRegression
 from gensim.models import Word2Vec
 from nearpy import Engine
@@ -41,12 +43,12 @@ class LinearTranslator:
     def parse_args(self):
         parser = argparse.ArgumentParser()
         parser.add_argument(
-            "-m", "--mode", dest='mode', 
+            "-m", "--mode", dest='mode',
             choices=['collect', 'score', 'analogy'], default='collect')
         parser.add_argument(
             '--output-directory', dest=output_dir)
         parser.add_argument(
-            '-o', '--output-file-name', dest='outfilen', 
+            '-o', '--output-file-name', dest='outfilen',
             help='prefix of names of output and log files without path')
         parser.add_argument(
             '-l', '--log-to-stderr', action='store_true', dest='log_to_err')
@@ -55,21 +57,21 @@ class LinearTranslator:
         parser.add_argument(
             "-t", "--target-lang-mod", dest='tg_langm_filen', type=str)
         parser.add_argument(
-            "-d", "--seed-dict", type=str, 
+            "-d", "--seed-dict", type=str,
             default="wikt2dict",
             dest='seed_filen')
         parser.add_argument(
-            "-r", "--reverse", 
+            "-r", "--reverse",
             action='store_true',
             help="use if the seed dict contains pair in reverse order")
         parser.add_argument(
-            "-v", "--translate-oov", dest='trans_freq_oov', action='store_true', 
+            "-v", "--translate-oov", dest='trans_freq_oov', action='store_true',
             help='Translate frequent words without a seed dictionary translation')
         parser.add_argument(
-            '-e', '-exact-neighbor', dest='exact_neighbor',
+            '-e', '-exact-neighbour', dest='exact_neighbour',
             action='store_true')
         parser.add_argument(
-            '-p', '--pair', default='en_hu', 
+            '-p', '--pair', default='en_hu',
             help='language pair (in alphabetical order)')
         parser.add_argument(
             '-c', '--restrict-embed', choices = ['n', 's', 't', 'st'],
@@ -79,34 +81,25 @@ class LinearTranslator:
             help='consider only "forced" stems')
         return parser.parse_args()
 
-    def config_logger(self, log_to_err):
-        level = logging.DEBUG
-        format_ = "%(asctime)s : %(module)s (%(lineno)s) - %(levelname)s - %(message)s"
-        if log_to_err:
-            logging.basicConfig(level=level, format=format_) 
-        else:
-            filename = '{}/{}/log/{}'.format(self.output_dir, self.args.mode,
-                                            self.args.outfilen)
-            if os.path.isfile(filename):
-                os.remove(filename)
-            logging.basicConfig(filename=filename, level=level,
-                                format=format_) 
-
     def get_outfilen(self):
         if not self.args.outfilen:
             if self.args.mode == 'analogy':
                 self.args.outfilen = self.strip_embed_filen(
                     self.args.sr_langm_filen)
             else:
-                # assert self.args.mode in ['collect', 'score']
+                assert self.args.mode in ['collect', 'score']
                 self.args.outfilen = '{}__{}__{}_{}f_c{}_o{}'.format(
                     self.strip_embed_filen(self.args.sr_langm_filen),
                     self.strip_embed_filen(self.args.tg_langm_filen),
-                    self.args.seed_filen.split('/')[-1], 
+                    self.args.seed_filen.split('/')[-1],
                     int(self.args.forced_stem),
                     self.args.restrict_embed,
                     int(self.args.trans_freq_oov))
-
+        self.out_dict_filen = self.mode_dir + self.args.outfilen
+        if os.path.isfile(self.out_dict_filen):
+            raise Exception(
+                'file for collected translation pairs exists {}'.format(
+                    self.out_dict_filen))
 
     def strip_embed_filen(self, old_filen):
         path, new_filen = os.path.split(old_filen)
@@ -116,21 +109,29 @@ class LinearTranslator:
         else:
             return old_filen
 
+    def config_logger(self, log_to_err):
+        level = logging.DEBUG
+        format_ = "%(asctime)s : %(module)s (%(lineno)s) - %(levelname)s - %(message)s"
+        if log_to_err:
+            logging.basicConfig(level=level, format=format_)
+        else:
+            filename = '{}/{}/log/{}'.format(self.output_dir, self.args.mode,
+                                            self.args.outfilen)
+            if os.path.isfile(filename):
+                os.remove(filename)
+            logging.basicConfig(filename=filename, level=level,
+                                format=format_)
+
     def init_biling(self):
-        out_dict_filen = self.mode_dir + self.args.outfilen
-        if os.path.isfile(out_dict_filen): 
-            raise Exception(
-                'file for collected translation pairs exists {}'.format(
-                    out_dict_filen))
-        self.outfile = open(out_dict_filen, mode='w')
+        self.outfile = open(self.out_dict_filen, mode='w')
         self.train_needed = 5000 if self.args.mode == 'collect' else 20000
         self.test_needed= 1000 if self.args.mode == 'collect' else 20000
 
     def main(self):
         if self.args.mode == 'analogy':
             self.analogy_main()
-        else: 
-            # This branch is for modes 'collect' and 'score'
+        else:
+            assert self.args.mode in ['collect', 'score']
             self.biling_main()
 
     def analogy_main(self):
@@ -140,7 +141,7 @@ class LinearTranslator:
         for label in ['+l', '1l']:
             if label in self.args.sr_langm_filen:
                 lower = True
-        return model.accuracy( 
+        return model.accuracy(
             os.path.expanduser('~') +
             '/project/efnilex/vector/analogy/hu/questions-words.txt',
             lower=lower)
@@ -152,24 +153,16 @@ class LinearTranslator:
         """
         self.sr_model = self.load_embed(self.args.sr_langm_filen)
         self.tg_model = self.load_embed(self.args.tg_langm_filen)
-        # tg_model.syn0.astype('float32', casting='same_kind', copy=False)
+        # TODO? tg_model.syn0.astype('float32', casting='same_kind', copy=False)
         self.tg_index = bidict(enumerate(self.tg_model.index2word))
         self.read_seed()
-        self.get_trans_model()
-        self.sr_embed_f = codecs.open(self.args.sr_langm_filen,
-                                      encoding='utf-8')
-        sr_position, ootg = self.get_training_data()
-        logging.debug(
-            'out of target embed: {}'.format(
-                '; '.join(word.encode('utf8') for word in ootg[:20])))
-        if not sr_position:
-            raise Exception(
-                'Too few training pairs ({})'.format(sr_position))
+        self.get_training_data()
         logging.info('fitting model')
+        self.get_trans_model()
         self.trans_model.fit(np.array(self.sr_train), np.array(self.tg_train))
         logging.info('testing')
         if self.args.mode == 'collect':
-            self.collect_main(sr_position)
+            self.collect_main()
         elif self.args.mode == 'score':
             self.score_main()
 
@@ -191,15 +184,8 @@ class LinearTranslator:
             #mx = nnlm.model.get_params()[0].get_value()
             raise NotImplementedError
         else:
-            # The embedding in the format of the original C code 
+            # The embedding in the format of the original C code
             return Word2Vec.load_word2vec_format(filen, binary='bin' in filen)
-
-    def read_word_and_vec(self, line):
-        cells = line.strip().split(' ')
-        word = cells[0]
-        vec = np.array([float(coord) for coord in
-                        cells[1:]]).astype('float32')
-        return word, vec
 
     def read_seed(self):
         # TODO do we need fallback?
@@ -225,6 +211,49 @@ class LinearTranslator:
                 logging.error('too few training pairs')
                 raise Exception('too few training pairs')
 
+    def get_training_data(self):
+        train_dat_fn = '{}/train_dat/{}.pkl'.format(self.output_dir, 
+                                                self.args.outfilen)
+        if os.path.isfile(train_dat_fn):
+            logging.info('loading training data from {}'.format(train_dat_fn))
+            (self.sr_train, self.sr_freq_not_seed, self.sr_position,
+             self.tg_train, self.ootg) = cPickle.load(open(train_dat_fn,
+                                                           mode='rb'))
+            return 
+        self.sr_train = []
+        self.sr_freq_not_seed = []
+        self.tg_train = []
+        self.ootg = []
+        train_collected = 0
+        for i, (sr_word, sr_vec) in enumerate(izip(self.sr_model.index2word,
+                                                   self.sr_model.syn0)):
+            if train_collected < self.train_needed:
+                if sr_word in self.seed_dict:
+                    tg_word = self.seed_dict[sr_word]
+                    if tg_word in self.tg_index.itervalues():
+                        if not train_collected % 1000:
+                            logging.debug(
+                                '{} training items collected'.format(train_collected))
+                        train_collected += 1
+                        self.sr_train.append(sr_vec)
+                        self.tg_train.append(self.tg_model.syn0[self.tg_index[:tg_word]])
+                    else:
+                        self.ootg.append(tg_word)
+                else:
+                    self.sr_freq_not_seed.append((sr_word, sr_vec))
+            else:
+                self.sr_position = i
+                break
+        else:
+            self.sr_position = None
+        logging.debug('out of target embed: {}'.format(
+                '; '.join(word.encode('utf8') for word in self.ootg[:20])))
+        if not self.sr_position:
+            raise Exception( 'Too few training pairs ({})'.format(self.sr_position))
+        logging.info('Pickling training data to {}'.format(train_dat_fn))
+        cPickle.dump((self.sr_train, self.sr_freq_not_seed, self.sr_position,
+                      self.tg_train, self.ootg), open(train_dat_fn, mode='wb'))
+
     def get_trans_model(self):
         self.trans_model = LinearRegression() # TODO parametrize (penalty, ...)
         # TODO self.trans_model = ElasticNet(), Lasso, Ridge, SVR
@@ -232,84 +261,35 @@ class LinearTranslator:
         # TODO crossvalidation
         logging.info(str(self.trans_model))
 
-    def get_training_data(self):
-        self.sr_train = []
-        self.sr_position = 0
-        self.tg_train = []        
-        self.sr_freq_not_seed = []
-        ootg = []
-        train_collected = 0
-        #self.sr_embed_f.readline() # The header is skipped.
-        for i, (sr_word, sr_vec) in enumerate(izip(self.sr_model.index2word, 
-                                                   self.sr_model.syn0)):
-            if train_collected < self.train_needed:
-                if sr_word in self.seed_dict:
-                    if not train_collected % 1000:
-                        logging.debug(
-                            '{} training items collected'.format(train_collected))
-                    train_collected += 1
-                    tg_word = self.seed_dict[sr_word]
-                    if tg_word in self.tg_index.itervalues():
-                        if sr_vec is None:
-                            # This branch is for mode 'score'
-                            sr_vec = self.embeds['sr'][sr_word]
-                        self.sr_train.append(sr_vec)
-                        self.tg_train.append(self.tg_model.syn0[self.tg_index[:tg_word]])
-                    else:
-                        ootg.append(tg_word)
-                else:
-                    self.sr_freq_not_seed.append((sr_word, sr_vec))
-            else:
-                return i, ootg
-        else:
-            return None, ootg
-
-
-    def get_nearpy_engine(self):
-        hashes = []
-        for _ in xrange(1):
-            # TODO 
-            #   less or more projections
-            #   other types of projections
-            hashes.append(RandomBinaryProjections('kutya', 10))
-        dim = self.tg_model.syn0.shape[1]
-        self.engine = Engine(dim, lshashes=hashes, distance=CosineDistance(),
-                             vector_filters=[NearestFilter(self.neighbor_k)])
-        for ind, vec in enumerate(self.tg_model.syn0):
-            if not ind % 100000:
-                logging.info(
-                    '{} target words added to nearpy engine'.format(ind))
-            self.engine.store_vector(vec, ind)
-
-    def collect_main(self, sr_position):
+    def collect_main(self):
         """
         First look for translations with gold data to see precision, then
         compute translations of frequent words without seed translation.
         """
-        self.neighbor_k = 10
+        self.neighbour_k = 10
         self.get_nearpy_engine()
         self.collected = 0
         self.has_seed = 0
         self.score_at_5 = 0
         self.score_at_1 = 0
-        self.reved_neighbors = defaultdict(set)
-        for sr_word, sr_vec in izip(self.sr_model.index2word[sr_position:],
-                                    self.sr_model.syn0[sr_position:]):
+        self.reved_neighbours = defaultdict(set)
+        for sr_word, sr_vec in izip(self.sr_model.index2word[self.sr_position:],
+                                    self.sr_model.syn0[self.sr_position:]):
             self.test_item(sr_word, sr_vec)
             if self.has_seed >= self.test_needed:
                 # TODO If the goal is not only measuring precision but
                 # collecting as many translations as possible, and sr lang_mod
-                # is properly chosen, no breaking is needed. 
+                # is properly chosen, no breaking is needed.
                 break
-        else: 
+        else:
             logging.error(
                 'Only {} test pairs with gold data. {} needed.'.format(
                     self.has_seed, self.test_needed))
         if self.has_seed != self.test_needed:
             logging.debug((self.has_seed, self.test_needed))
         logging.info('on {} words, prec@1: {:.2%}\tprec@5: {:.2%}'.format(
-            self.has_seed, 
-            *[float(score)/self.has_seed 
+            self.has_seed,
+            *[float(score)/self.has_seed
               for score in [ self.score_at_1, self.score_at_5]]))
         if self.args.trans_freq_oov:
             logging.info(
@@ -319,23 +299,33 @@ class LinearTranslator:
         else:
             logging.info('Frequent words without seed translation skipped.')
 
+    def get_nearpy_engine(self):
+        hashes = [RandomBinaryProjections('kutya', 10) for i in xrange(10)]
+        # TODO less or more projections and other types of projections
+        dim = self.tg_model.syn0.shape[1]
+        self.engine = Engine(dim, lshashes=hashes, distance=CosineDistance(),
+                             vector_filters=[NearestFilter(self.neighbour_k)])
+        for ind, vec in enumerate(self.tg_model.syn0):
+            if not ind % 100000:
+                logging.info(
+                    '{} target words added to nearpy engine'.format(ind))
+            self.engine.store_vector(vec, ind)
+
     def test_item(self, sr_word, sr_vec, prec_at=9):
-        self.collected += 1
         if not self.collected % 100:
             logging.debug(
                 '{} translations collected, {} have reference translation'.format(
                     self.collected, self.has_seed))
-        guessed_vec = self.trans_model.predict(sr_vec.reshape((1,-1))).astype(
-            'float32').reshape((-1))
-        if self.args.exact_neighbor:
-            # TODO Normalize computed vectors and tg embedding vectors.
-            distances = self.tg_model.syn0.dot(guessed_vec.reshape(
-                (-1,1))).reshape(-1)
-            tg_indices_ranked = np.argsort(-distances)
+        self.collected += 1
+        guessed_vec = self.trans_model.predict(sr_vec.reshape((1,-1)))
+        # TODO? .astype('float31')
+        if self.args.exact_neighbour:
+            distances = cdist(self.tg_model.syn0, guessed_vec, 'cosine')
+            tg_indices_ranked = np.argsort(distances.T).reshape(-1)
             best_dist = cosine(self.tg_model.syn0[tg_indices_ranked[0]],
                                guessed_vec)
         else:
-            _, tg_indices_ranked, distances = zip(*self.engine.neighbors(
+            _, tg_indices_ranked, distances = zip(*self.engine.neighbours(
                 guessed_vec))
             best_dist = distances[0]
         gold = self.eval_item_with_gold(sr_word, tg_indices_ranked)
@@ -346,15 +336,15 @@ class LinearTranslator:
                 gold_rank=gold['rank'],
                 dist=best_dist,
                 tg_ws=' '.join(
-                    self.tg_index[ind].encode('utf-8') 
+                    self.tg_index[ind].encode('utf-8')
                     for ind in tg_indices_ranked[:prec_at])))
 
-    def eval_item_with_gold(self, sr_word, tg_indices_ranked):#=None, guessed_vec=None):
+    def eval_item_with_gold(self, sr_word, tg_indices_ranked):
         """
         Looks up the gold target word and books precision.
         """
         gold = {
-            'word': '', 'rank': '>{}'.format(self.neighbor_k)}
+            'word': '', 'rank': '>{}'.format(self.neighbour_k)}
         if sr_word in self.seed_dict:
             gold['word'] = self.seed_dict[sr_word]
             self.has_seed += 1
@@ -370,13 +360,8 @@ class LinearTranslator:
 
     def score_main(self):
         raise NotImplementedError
-        guessed_vecs = self.trans_model.predict(np.array(sr_vecs))
-        for sr_word, tg_word, sim in zip(sr_words, tg_words, sim_mx):
-            self.outfile.write('\t'.join([sr_word, tg_word,
-                                           str(sim)])+'\n')
 
 
 if __name__=='__main__':
-    output_dir = '/home/makrai/project/efnilex/vector'
-    # TODO '/mnt/store/home/makrai/project/efnilex/vector/'
-    LinearTranslator(output_dir).main()
+    output_dir = '/mnt/store/home/makrai/project/efnilex/vector/'
+    cProfile.run('LinearTranslator(output_dir).main()')

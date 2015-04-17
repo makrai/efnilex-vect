@@ -188,13 +188,14 @@ class LinearTranslator:
             return Word2Vec.load_word2vec_format(filen, binary='bin' in filen)
 
     def read_seed(self):
+        logging.info('Reading seed dictionary from {}'.format(
+            self.args.seed_filen))
         # TODO do we need fallback?
         columns = [1,3] if 'wikt2dict' in self.args.seed_filen else range(2)
         if self.args.reverse:
             columns.reverse()
-        filen = self.args.seed_filen
         self.seed_dict = {}
-        with codecs.open(filen, encoding='utf-8') as file_:
+        with codecs.open(self.args.seed_filen, encoding='utf-8') as file_:
             for line in file_.readlines():
                 separator = '\t' if '\t' in line else ' '
                 cells = line.strip().split(separator)
@@ -272,7 +273,6 @@ class LinearTranslator:
         self.has_seed = 0
         self.score_at_5 = 0
         self.score_at_1 = 0
-        self.reved_neighbours = defaultdict(set)
         for sr_word, sr_vec in izip(self.sr_model.index2word[self.sr_position:],
                                     self.sr_model.syn0[self.sr_position:]):
             self.test_item(sr_word, sr_vec)
@@ -300,16 +300,16 @@ class LinearTranslator:
             logging.info('Frequent words without seed translation skipped.')
 
     def get_nearpy_engine(self):
-        hashes = [RandomBinaryProjections('kutya', 10) for i in xrange(10)]
+        hashes = [RandomBinaryProjections('rbp', 11)]
         # TODO less or more projections and other types of projections
         dim = self.tg_model.syn0.shape[1]
         self.engine = Engine(dim, lshashes=hashes, distance=CosineDistance(),
                              vector_filters=[NearestFilter(self.neighbour_k)])
-        for ind, vec in enumerate(self.tg_model.syn0):
+        for ind in xrange(self.tg_model.syn0.shape[0]):
             if not ind % 100000:
                 logging.info(
                     '{} target words added to nearpy engine'.format(ind))
-            self.engine.store_vector(vec, ind)
+            self.engine.store_vector(self.tg_model.syn0[ind,:], ind)
 
     def test_item(self, sr_word, sr_vec, prec_at=9):
         if not self.collected % 100:
@@ -321,12 +321,12 @@ class LinearTranslator:
         # TODO? .astype('float31')
         if self.args.exact_neighbour:
             distances = cdist(self.tg_model.syn0, guessed_vec, 'cosine')
-            tg_indices_ranked = np.argsort(distances.T).reshape(-1)
+            tg_indices_ranked = np.argsort(distances.T).reshape(-1).tolist()
             best_dist = cosine(self.tg_model.syn0[tg_indices_ranked[0]],
                                guessed_vec)
         else:
             _, tg_indices_ranked, distances = zip(*self.engine.neighbours(
-                guessed_vec))
+                guessed_vec.reshape(-1)))
             best_dist = distances[0]
         gold = self.eval_item_with_gold(sr_word, tg_indices_ranked)
         self.outfile.write(
@@ -351,7 +351,7 @@ class LinearTranslator:
             if gold['word'] in self.tg_index.itervalues():
                 index = self.tg_index[:gold['word']]
                 if index in tg_indices_ranked:
-                    gold['rank'] = tg_indices_ranked.tolist().index(index)
+                    gold['rank'] = tg_indices_ranked.index(index)
                     if gold['rank'] < 5:
                         self.score_at_5 += 1
                         if gold['rank'] == 0:

@@ -1,8 +1,7 @@
 import argparse
 import codecs
-from collections import defaultdict
 import cPickle
-import cProfile
+#import cProfile
 from itertools import izip
 import logging
 import os.path
@@ -11,13 +10,11 @@ import re
 
 from bidict import bidict
 import numpy as np
-from scipy.spatial.distance import cosine, cdist
+from scipy.spatial.distance import cdist
 from sklearn.linear_model import LinearRegression
 from gensim.models import Word2Vec
 from nearpy import Engine
-from nearpy.hashes import RandomBinaryProjections
-from nearpy.filters import NearestFilter
-from nearpy.distances import CosineDistance
+from nearpy.hashes import PCABinaryProjections
 
 
 class LinearTranslator:
@@ -157,10 +154,8 @@ class LinearTranslator:
         self.tg_index = bidict(enumerate(self.tg_model.index2word))
         self.read_seed()
         self.get_training_data()
-        logging.info('fitting model')
         self.get_trans_model()
         self.trans_model.fit(np.array(self.sr_train), np.array(self.tg_train))
-        logging.info('testing')
         if self.args.mode == 'collect':
             self.collect_main()
         elif self.args.mode == 'score':
@@ -188,6 +183,11 @@ class LinearTranslator:
             return Word2Vec.load_word2vec_format(filen, binary='bin' in filen)
 
     def read_seed(self):
+        """
+        It is assumed that the first translation is the best.  E.g. in the
+        case of wikt2dict, the first translation is present in more editions
+        of Wiktionary.
+        """
         logging.info('Reading seed dictionary from {}'.format(
             self.args.seed_filen))
         # TODO do we need fallback?
@@ -201,9 +201,6 @@ class LinearTranslator:
                 cells = line.strip().split(separator)
                 sr_word, tg_word = [cells[index] for index in columns]
                 if sr_word in self.seed_dict:
-                    # It is assumed that the first translation is the best.
-                    # E.g. in the case of wikt2dict, the first translation is
-                    # present in more editions of Wiktionary.
                     continue
                 self.seed_dict[sr_word] = tg_word
         logging.info('{} seed pairs e.g. {}'.format(len(self.seed_dict),
@@ -213,14 +210,17 @@ class LinearTranslator:
                 raise Exception('too few training pairs')
 
     def get_training_data(self):
-        train_dat_fn = '{}/train_dat/{}.pkl'.format(self.output_dir, 
-                                                self.args.outfilen)
+        train_dat_fn = '{}/train_dat/{}__{}__{}.pkl'.format(
+            self.output_dir,
+            self.strip_embed_filen(self.args.sr_langm_filen),
+            self.strip_embed_filen(self.args.tg_langm_filen),
+            self.args.seed_filen.split('/')[-1])
         if os.path.isfile(train_dat_fn):
             logging.info('loading training data from {}'.format(train_dat_fn))
             (self.sr_train, self.sr_freq_not_seed, self.sr_position,
              self.tg_train, self.ootg) = cPickle.load(open(train_dat_fn,
                                                            mode='rb'))
-            return 
+            return
         self.sr_train = []
         self.sr_freq_not_seed = []
         self.tg_train = []
@@ -256,11 +256,14 @@ class LinearTranslator:
                       self.tg_train, self.ootg), open(train_dat_fn, mode='wb'))
 
     def get_trans_model(self):
-        self.trans_model = LinearRegression() # TODO parametrize (penalty, ...)
-        # TODO self.trans_model = ElasticNet(), Lasso, Ridge, SVR
-        # http://stackoverflow.com/questions/19650115/which-scikit-learn-tools-can-handle-multivariate-output
+        """
+        http://stackoverflow.com/questions/19650115/which-scikit-learn-tools-can-handle-multivariate-output 
+        """
+        self.trans_model = LinearRegression() 
+        # TODO parametrize trans_model
         # TODO crossvalidation
-        logging.info(str(self.trans_model))
+        logging.info('Fitting translation model {}...'.format(
+            self.trans_model))
 
     def collect_main(self):
         """
@@ -269,6 +272,7 @@ class LinearTranslator:
         """
         self.neighbour_k = 10
         self.get_nearpy_engine()
+        logging.info('Collecting translations...')
         self.collected = 0
         self.has_seed = 0
         self.score_at_5 = 0
@@ -300,35 +304,41 @@ class LinearTranslator:
             logging.info('Frequent words without seed translation skipped.')
 
     def get_nearpy_engine(self):
-        hashes = [RandomBinaryProjections('rbp', 11)]
-        # TODO less or more projections and other types of projections
-        dim = self.tg_model.syn0.shape[1]
-        self.engine = Engine(dim, lshashes=hashes, distance=CosineDistance(),
-                             vector_filters=[NearestFilter(self.neighbour_k)])
+        """
+        The instanciation of the PCA hash means a PCA of the target embedding
+        and consumes much memory.
+        """
+        # TODO how many bins?
+        # TODO PCA on less
+        # TODO combinations of hashes?
+        logging.info('Creating nearpy engine...')
+        hashes = [PCABinaryProjections('ne1v', 2, self.tg_model.syn0.T)]
+        logging.info(hashes)
+        dim = self.tg_model.layer1_size
+        self.engine = Engine(dim, lshashes=hashes, vector_filters=[],
+                             distance=[])
         for ind in xrange(self.tg_model.syn0.shape[0]):
             if not ind % 100000:
-                logging.info(
+                logging.debug(
                     '{} target words added to nearpy engine'.format(ind))
             self.engine.store_vector(self.tg_model.syn0[ind,:], ind)
 
     def test_item(self, sr_word, sr_vec, prec_at=9):
         if not self.collected % 100:
-            logging.debug(
-                '{} translations collected, {} have reference translation'.format(
+            logging.debug( '{} translations collected, {} have reference translation'.format(
                     self.collected, self.has_seed))
         self.collected += 1
         guessed_vec = self.trans_model.predict(sr_vec.reshape((1,-1)))
         # TODO? .astype('float31')
-        if self.args.exact_neighbour:
-            distances = cdist(self.tg_model.syn0, guessed_vec, 'cosine')
-            tg_indices_ranked = np.argsort(distances.T).reshape(-1).tolist()
-            best_dist = cosine(self.tg_model.syn0[tg_indices_ranked[0]],
-                               guessed_vec)
-        else:
-            _, tg_indices_ranked, distances = zip(*self.engine.neighbours(
-                guessed_vec.reshape(-1)))
-            best_dist = distances[0]
-        gold = self.eval_item_with_gold(sr_word, tg_indices_ranked)
+        near_vecs, near_inds = zip(*self.engine.neighbours(guessed_vec.reshape(-1)))
+        #if not self.collected % 100: logging.debug(
+        #'{} approximate neighbours'.format(len(near_inds)))
+        distances = cdist(near_vecs, guessed_vec, 'cosine').reshape(-1)
+        inds_among_near = np.argsort(distances)
+        tg_indices_ranked = [near_inds[i] for i in inds_among_near]
+        gold = self.eval_item_with_gold( 
+            sr_word, tg_indices_ranked[:self.neighbour_k])
+        best_dist = distances[inds_among_near[0]]
         self.outfile.write(
             '{sr_w}\t{gold_tg_w}\t{gold_rank}\t{dist:.4}\t{tg_ws}\n'.format(
                 sr_w=sr_word.encode('utf-8'),
@@ -363,5 +373,6 @@ class LinearTranslator:
 
 
 if __name__=='__main__':
-    output_dir = '/mnt/store/home/makrai/project/efnilex/vector/'
-    cProfile.run('LinearTranslator(output_dir).main()')
+    output_dir = '/mnt/store/home/makrai/project/efnilex/vector'
+    #cProfile.run('
+    LinearTranslator(output_dir).main()#')

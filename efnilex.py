@@ -16,7 +16,6 @@ from gensim.models import Word2Vec
 from nearpy import Engine
 from nearpy.hashes import PCABinaryProjections
 
-
 class LinearTranslator:
     """
     Collects translational word pairs from neural language models (embeddings)
@@ -85,13 +84,14 @@ class LinearTranslator:
                     self.args.sr_langm_filen)
             else:
                 assert self.args.mode in ['collect', 'score']
-                self.args.outfilen = '{}__{}__{}_{}f_c{}_o{}'.format(
+                self.args.outfilen = '{}__{}__{}_{}f_c{}_o{}_e{}'.format(
                     self.strip_embed_filen(self.args.sr_langm_filen),
                     self.strip_embed_filen(self.args.tg_langm_filen),
                     self.args.seed_filen.split('/')[-1],
                     int(self.args.forced_stem),
                     self.args.restrict_embed,
-                    int(self.args.trans_freq_oov))
+                    int(self.args.trans_freq_oov),
+                    int(self.args.exact_neighbour))
         self.out_dict_filen = self.mode_dir + self.args.outfilen
         if os.path.isfile(self.out_dict_filen):
             raise Exception(
@@ -150,7 +150,7 @@ class LinearTranslator:
         """
         self.sr_model = self.load_embed(self.args.sr_langm_filen)
         self.tg_model = self.load_embed(self.args.tg_langm_filen)
-        # TODO? tg_model.syn0.astype('float32', casting='same_kind', copy=False)
+        # TODO? self.tg_model.syn0.astype('float32', casting='same_kind', copy=False)
         self.tg_index = bidict(enumerate(self.tg_model.index2word))
         self.read_seed()
         self.get_training_data()
@@ -308,11 +308,9 @@ class LinearTranslator:
         The instanciation of the PCA hash means a PCA of the target embedding
         and consumes much memory.
         """
-        # TODO how many bins?
-        # TODO PCA on less
-        # TODO combinations of hashes?
         logging.info('Creating nearpy engine...')
-        hashes = [PCABinaryProjections('ne1v', 2, self.tg_model.syn0.T)]
+        hashes = [PCABinaryProjections(
+            'ne1v', 1, self.tg_model.syn0.T[:1000,:])]
         logging.info(hashes)
         dim = self.tg_model.layer1_size
         self.engine = Engine(dim, lshashes=hashes, vector_filters=[],
@@ -329,8 +327,8 @@ class LinearTranslator:
                     self.collected, self.has_seed))
         self.collected += 1
         guessed_vec = self.trans_model.predict(sr_vec.reshape((1,-1)))
-        # TODO? .astype('float31')
-        near_vecs, near_inds = zip(*self.engine.neighbours(guessed_vec.reshape(-1)))
+        # TODO? .astype('float32')
+        near_vecs, near_inds = izip(*self.engine.neighbours(guessed_vec.reshape(-1)))
         #if not self.collected % 100: logging.debug(
         #'{} approximate neighbours'.format(len(near_inds)))
         distances = cdist(near_vecs, guessed_vec, 'cosine').reshape(-1)

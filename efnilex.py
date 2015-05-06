@@ -191,7 +191,7 @@ class LinearTranslator:
         logging.info('Reading seed dictionary from {}'.format(
             self.args.seed_filen))
         # TODO do we need fallback?
-        columns = [1,3] if 'wikt2dict' in self.args.seed_filen else range(2)
+        columns = [1,3] if 'wikt' in self.args.seed_filen else range(2)
         if self.args.reverse:
             columns.reverse()
         self.seed_dict = {}
@@ -246,11 +246,12 @@ class LinearTranslator:
                 self.sr_position = i
                 break
         else:
+            logging.error('Too few training pairs ({})'.format(len(self.sr_train)))
             self.sr_position = None
         logging.debug('out of target embed: {}'.format(
                 '; '.join(word.encode('utf8') for word in self.ootg[:20])))
         if not self.sr_position:
-            raise Exception( 'Too few training pairs ({})'.format(self.sr_position))
+            raise Exception('Too few training pairs')
         logging.info('Pickling training data to {}'.format(train_dat_fn))
         cPickle.dump((self.sr_train, self.sr_freq_not_seed, self.sr_position,
                       self.tg_train, self.ootg), open(train_dat_fn, mode='wb'))
@@ -328,10 +329,14 @@ class LinearTranslator:
         self.collected += 1
         guessed_vec = self.trans_model.predict(sr_vec.reshape((1,-1)))
         # TODO? .astype('float32')
-        near_vecs, near_inds = izip(*self.engine.neighbours(guessed_vec.reshape(-1)))
+        if self.args.exact_neighbour:
+            near_vecs = self.tg_model.syn0
+        else:
+            near_vecs, near_inds = izip(*self.engine.neighbours(guessed_vec.reshape(-1)))
         #if not self.collected % 100: logging.debug(
         #'{} approximate neighbours'.format(len(near_inds)))
         distances = cdist(near_vecs, guessed_vec, 'cosine').reshape(-1)
+        # ^ 1/3 of time is spent here
         inds_among_near = np.argsort(distances)
         tg_indices_ranked = [near_inds[i] for i in inds_among_near]
         gold = self.eval_item_with_gold( 

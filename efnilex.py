@@ -244,9 +244,10 @@ class LinearTranslator:
                     self.sr_freq_not_seed.append((sr_word, sr_vec))
             else:
                 self.sr_position = i
+                logging.info('At seed item {}'.format(self.sr_position))
                 break
         else:
-            logging.error('Too few training pairs ({})'.format(len(self.sr_train)))
+            logging.error('Too few training pairs')
             self.sr_position = None
         logging.debug('out of target embed: {}'.format(
                 '; '.join(word.encode('utf8') for word in self.ootg[:20])))
@@ -376,6 +377,6 @@ class LinearTranslator:
 
 
 if __name__=='__main__':
-    output_dir = '/mnt/store/home/makrai/project/efnilex/vector'
+    output_dir = '/mnt/store/home/makrai/project/efnilex'
     #cProfile.run('
     LinearTranslator(output_dir).main()#')

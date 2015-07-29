@@ -61,8 +61,10 @@ class LinearTranslator:
             action='store_true',
             help="use if the seed dict contains pair in reverse order")
         parser.add_argument(
-            "-v", "--translate-oov", dest='trans_freq_oov', action='store_true',
-            help='Translate frequent words without a seed dictionary translation')
+            "-v", "--translate-oov", dest='trans_freq_oov',
+            action='store_false',
+            help='Not translate frequent words that are not covered by the\
+            seed')
         parser.add_argument(
             '-e', '-exact-neighbour', dest='exact_neighbour',
             action='store_true')
@@ -71,26 +73,45 @@ class LinearTranslator:
             help='language pair (in alphabetical order)')
         parser.add_argument(
             '-c', '--restrict-embed', choices = ['n', 's', 't', 'st'],
-            dest='restrict_embed', default='n')
+            dest='restrict_embed', default='n',
+            help="which of the source and the target embeddings to restrict:\
+            *n*one, *s*ource, *t*arget, or *st* both")
+            
         parser.add_argument(
             "-f", "--forced-stem", dest='forced_stem', action='store_true',
             help='consider only "forced" stems')
         return parser.parse_args()
 
     def get_outfilen(self):
+        """"
+        Output files are named according to the pattern
+        source__target__seed__opts
+        where
+            source describes the source language model
+            target describes the target language model
+            seed describes the seed dictionary
+            opts describes options (mostly for debugging, excpet for "v")
+                v   whether frequent source words not covered by the seed are
+                    translated after training
+                f   whether forced stemming is used
+                c   which of the source and the target vocabulary is
+                    restricted
+                e   whether exact neighbour are computed instead of using
+                    nearpy.
+        """
         if not self.args.outfilen:
             if self.args.mode == 'analogy':
                 self.args.outfilen = self.strip_embed_filen(
                     self.args.sr_langm_filen)
             else:
                 assert self.args.mode in ['collect', 'score']
-                self.args.outfilen = '{}__{}__{}_{}f_c{}_o{}_e{}'.format(
+                self.args.outfilen = '{}__{}__{}__{}v-{}f-c{}-{}e'.format(
                     self.strip_embed_filen(self.args.sr_langm_filen),
                     self.strip_embed_filen(self.args.tg_langm_filen),
                     self.args.seed_filen.split('/')[-1],
+                    int(self.args.trans_freq_oov),
                     int(self.args.forced_stem),
                     self.args.restrict_embed,
-                    int(self.args.trans_freq_oov),
                     int(self.args.exact_neighbour))
         self.out_dict_filen = self.mode_dir + self.args.outfilen
         if os.path.isfile(self.out_dict_filen):
@@ -108,7 +129,8 @@ class LinearTranslator:
 
     def config_logger(self, log_to_err):
         level = logging.DEBUG
-        format_ = "%(asctime)s : %(module)s (%(lineno)s) - %(levelname)s - %(message)s"
+        format_ = "%(asctime)s : %(module)s (%(lineno)s) - %(levelname)s - \
+        %(message)s"
         if log_to_err:
             logging.basicConfig(level=level, format=format_)
         else:
@@ -150,7 +172,8 @@ class LinearTranslator:
         """
         self.sr_model = self.load_embed(self.args.sr_langm_filen)
         self.tg_model = self.load_embed(self.args.tg_langm_filen)
-        # TODO? self.tg_model.syn0.astype('float32', casting='same_kind', copy=False)
+        # TODO? self.tg_model.syn0.astype('float32', casting='same_kind',
+        # copy=False)
         self.tg_index = bidict(enumerate(self.tg_model.index2word))
         self.read_seed()
         self.get_training_data()
@@ -203,8 +226,9 @@ class LinearTranslator:
                 if sr_word in self.seed_dict:
                     continue
                 self.seed_dict[sr_word] = tg_word
-        logging.info('{} seed pairs e.g. {}'.format(len(self.seed_dict),
-                                                    self.seed_dict.items()[:5]))
+        logging.info('{} seed pairs e.g. {}'.format(
+            len(self.seed_dict), 
+            self.seed_dict.items()[:5]))
         if len(self.seed_dict.keys()) < self.train_needed:
                 logging.error('too few training pairs')
                 raise Exception('too few training pairs')
@@ -234,10 +258,12 @@ class LinearTranslator:
                     if tg_word in self.tg_index.itervalues():
                         if not train_collected % 1000:
                             logging.debug(
-                                '{} training items collected'.format(train_collected))
+                                '{} training items collected'.format(
+                                    train_collected))
                         train_collected += 1
                         self.sr_train.append(sr_vec)
-                        self.tg_train.append(self.tg_model.syn0[self.tg_index[:tg_word]])
+                        self.tg_train.append(
+                            self.tg_model.syn0[self.tg_index[:tg_word]])
                     else:
                         self.ootg.append(tg_word)
                 else:
@@ -259,9 +285,10 @@ class LinearTranslator:
 
     def get_trans_model(self):
         """
-        http://stackoverflow.com/questions/19650115/which-scikit-learn-tools-can-handle-multivariate-output 
+        http://stackoverflow.com/questions/19650115/which-scikit-learn-tools-\
+                can-handle-multivariate-output
         """
-        self.trans_model = LinearRegression() 
+        self.trans_model = LinearRegression()
         # TODO parametrize trans_model
         # TODO crossvalidation
         logging.info('Fitting translation model {}...'.format(
@@ -273,14 +300,15 @@ class LinearTranslator:
         compute translations of frequent words without seed translation.
         """
         self.neighbour_k = 10
-        self.get_nearpy_engine()
+        self.populate_nearpy_engine()
         logging.info('Collecting translations...')
         self.collected = 0
         self.has_seed = 0
         self.score_at_5 = 0
         self.score_at_1 = 0
-        for sr_word, sr_vec in izip(self.sr_model.index2word[self.sr_position:],
-                                    self.sr_model.syn0[self.sr_position:]):
+        for sr_word, sr_vec in izip(
+                self.sr_model.index2word[self.sr_position:],
+                self.sr_model.syn0[self.sr_position:]):
             self.test_item(sr_word, sr_vec)
             if self.has_seed >= self.test_needed:
                 # TODO If the goal is not only measuring precision but
@@ -305,10 +333,10 @@ class LinearTranslator:
         else:
             logging.info('Frequent words without seed translation skipped.')
 
-    def get_nearpy_engine(self):
+    def populate_nearpy_engine(self):
         """
-        The instanciation of the PCA hash means a PCA of the target embedding
-        and consumes much memory.
+        Populates the nearpy engine. Note that the instanciation of the PCA
+        hash means a PCA of the target embedding and consumes much memory.
         """
         logging.info('Creating nearpy engine...')
         hashes = [PCABinaryProjections(
@@ -325,22 +353,23 @@ class LinearTranslator:
 
     def test_item(self, sr_word, sr_vec, prec_at=9):
         if not self.collected % 100:
-            logging.debug( '{} translations collected, {} have reference translation'.format(
-                    self.collected, self.has_seed))
+            logging.debug('{} translations collected, {} have reference\
+                          translation'.format( self.collected, self.has_seed))
         self.collected += 1
         guessed_vec = self.trans_model.predict(sr_vec.reshape((1,-1)))
         # TODO? .astype('float32')
         if self.args.exact_neighbour:
             near_vecs = self.tg_model.syn0
         else:
-            near_vecs, near_inds = izip(*self.engine.neighbours(guessed_vec.reshape(-1)))
+            near_vecs, near_inds = izip(
+                *self.engine.neighbours(guessed_vec.reshape(-1)))
         #if not self.collected % 100: logging.debug(
         #'{} approximate neighbours'.format(len(near_inds)))
         distances = cdist(near_vecs, guessed_vec, 'cosine').reshape(-1)
         # ^ 1/3 of time is spent here
         inds_among_near = np.argsort(distances)
         tg_indices_ranked = [near_inds[i] for i in inds_among_near]
-        gold = self.eval_item_with_gold( 
+        gold = self.eval_item_with_gold(
             sr_word, tg_indices_ranked[:self.neighbour_k])
         best_dist = distances[inds_among_near[0]]
         self.outfile.write(

@@ -67,7 +67,8 @@ class LinearTranslator:
             seed')
         parser.add_argument(
             '-e', '-exact-neighbour', dest='exact_neighbour',
-            action='store_true')
+            action='store_true',
+            help="instead of approximating by nearpy, compute exact neighbours")
         parser.add_argument(
             '-p', '--pair', default='en_hu',
             help='language pair (in alphabetical order)')
@@ -90,14 +91,8 @@ class LinearTranslator:
             source describes the source language model
             target describes the target language model
             seed describes the seed dictionary
-            opts describes options (mostly for debugging, excpet for "v")
-                v   whether frequent source words not covered by the seed are
-                    translated after training
-                f   whether forced stemming is used
-                c   which of the source and the target vocabulary is
-                    restricted
-                e   whether exact neighbour are computed instead of using
-                    nearpy.
+            opts describes the value of command line options v, f, c,
+            and e (mostly for debugging or papameter analysis)
         """
         if not self.args.outfilen:
             if self.args.mode == 'analogy':

@@ -20,9 +20,11 @@ class EmbedInterProcessor():
             '\xe2\x81\xa6', '\xe2\x81\xa7', '\xe2\x81\xa8', '\xe2\x81\xa9']
 
     def normalize(self, word):
+        # TODO
+        return word
         word = word.strip()
-        for space in self.spaces:
-            word.replace(space, '_')
+        for i, space in enumerate(self.spaces):
+            word.replace(space, '_'.decode('utf-8'))
         return word
             
     def main(self):
@@ -45,7 +47,6 @@ class EmbedInterProcessor():
                 m.save(file_pref+'.gensim')
             elif ext == '.txt':
                 with open(file_pref+'.tmp', mode='w') as out_file:
-                    # Output file need adding a header and replacing any kind of 
                     with open(in_filen) as in_file:
                         vocab_size = 0
                         dim = None
@@ -72,10 +73,17 @@ class EmbedInterProcessor():
                             vocab_size += 1
                             out_file.write(' '.join(fields).encode('utf-8')+'\n')
                 logging.info(
-                    'Now you need to add the header\n{} {}'.format(vocab_size, dim))
+                    'Now you need to add the header to {}.tmp\n{} {}'.format(
+                        vocab_size, dim, file_pref))
             elif ext == '.bin':
-                m = Word2Vec.load_word2vec_format(in_filen, binary=True)
-                m.save(file_pref+'.gensim')
+                if 'glove' in file_pref:
+                    raise NotImplementedError(
+                        'glove binaries are not suppoerted')
+                else:
+                    m = Word2Vec.load_word2vec_format(in_filen, binary=True)
+                    m.save(file_pref+'.gensim')
+            else:
+                raise NotImplementedError('extension unknown')
 
 
 if __name__ == '__main__':

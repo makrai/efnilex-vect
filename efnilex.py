@@ -2,6 +2,7 @@ import argparse
 import codecs
 import cPickle
 #import cProfile
+from collections import defaultdict
 from itertools import izip
 import logging
 import os.path
@@ -66,7 +67,10 @@ class LinearTranslator:
             help='Not translate frequent words that are not covered by the\
             seed')
         parser.add_argument(
-            '-e', '-exact-neighbour', dest='exact_neighbour',
+            '-b', '--ambig', help='let words have more translations',
+            action='store_true')
+        parser.add_argument(
+            '-e', '--exact-neighbour', dest='exact_neighbour',
             action='store_true',
             help="instead of approximating by nearpy, compute exact neighbours")
         parser.add_argument(
@@ -124,8 +128,7 @@ class LinearTranslator:
 
     def config_logger(self, log_to_err):
         level = logging.DEBUG
-        format_ = "%(asctime)s : %(module)s (%(lineno)s) - %(levelname)s - \
-        %(message)s"
+        format_ = "%(asctime)s : %(module)s (%(lineno)s) - %(levelname)s - %(message)s"
         if log_to_err:
             logging.basicConfig(level=level, format=format_)
         else:
@@ -212,15 +215,14 @@ class LinearTranslator:
         columns = [1,3] if 'wikt' in self.args.seed_filen else range(2)
         if self.args.reverse:
             columns.reverse()
-        self.seed_dict = {}
+        self.seed_dict = defaultdict(list)
         with codecs.open(self.args.seed_filen, encoding='utf-8') as file_:
             for line in file_.readlines():
                 separator = '\t' if '\t' in line else ' '
                 cells = line.strip().split(separator)
                 sr_word, tg_word = [cells[index] for index in columns]
-                if sr_word in self.seed_dict:
-                    continue
-                self.seed_dict[sr_word] = tg_word
+                if self.args.ambig or sr_word not in self.seed_dict:
+                    self.seed_dict[sr_word].append(tg_word)
         logging.info('{} seed pairs e.g. {}'.format(
             len(self.seed_dict), 
             self.seed_dict.items()[:5]))
@@ -249,7 +251,7 @@ class LinearTranslator:
                                                    self.sr_model.syn0)):
             if train_collected < self.train_needed:
                 if sr_word in self.seed_dict:
-                    tg_word = self.seed_dict[sr_word]
+                    tg_word = self.seed_dict[sr_word][0]
                     if tg_word in self.tg_index.itervalues():
                         if not train_collected % 1000:
                             logging.debug(
@@ -341,15 +343,15 @@ class LinearTranslator:
         self.engine = Engine(dim, lshashes=hashes, vector_filters=[],
                              distance=[])
         for ind in xrange(self.tg_model.syn0.shape[0]):
-            if not ind % 100000:
+            if not ind % 200000:
                 logging.debug(
                     '{} target words added to nearpy engine'.format(ind))
             self.engine.store_vector(self.tg_model.syn0[ind,:], ind)
 
     def test_item(self, sr_word, sr_vec, prec_at=9):
         if not self.collected % 100:
-            logging.debug('{} translations collected, {} have reference\
-                          translation'.format( self.collected, self.has_seed))
+            msg = '{} translations collected, {} have reference translation'
+            logging.debug(msg.format( self.collected, self.has_seed))
         self.collected += 1
         guessed_vec = self.trans_model.predict(sr_vec.reshape((1,-1)))
         # TODO? .astype('float32')
@@ -379,21 +381,30 @@ class LinearTranslator:
 
     def eval_item_with_gold(self, sr_word, tg_indices_ranked):
         """
-        Looks up the gold target word and books precision.
+        Looks up the gold target words and books precision.
         """
         gold = {
             'word': '', 'rank': '>{}'.format(self.neighbour_k)}
         if sr_word in self.seed_dict:
-            gold['word'] = self.seed_dict[sr_word]
             self.has_seed += 1
-            if gold['word'] in self.tg_index.itervalues():
-                index = self.tg_index[:gold['word']]
-                if index in tg_indices_ranked:
-                    gold['rank'] = tg_indices_ranked.index(index)
-                    if gold['rank'] < 5:
-                        self.score_at_5 += 1
-                        if gold['rank'] == 0:
-                            self.score_at_1 += 1
+            gold_words_embedded = filter(
+                lambda w: w in self.tg_index.itervalues(),
+                self.seed_dict[sr_word])
+            indices_gold_embedded = [
+                self.tg_index[:w] for w in gold_words_embedded]
+            indices_gold_found = filter(
+                lambda i: i in tg_indices_ranked,
+                indices_gold_embedded)
+            ranks_of_gold = set(tg_indices_ranked.index(i) for i in
+                                indices_gold_found)
+            if not ranks_of_gold:
+                return gold
+            gold['rank'] = min(ranks_of_gold)
+            gold['word'] = self.tg_index[tg_indices_ranked[gold['rank']]]
+            if gold['rank'] < 5:
+                self.score_at_5 += 1
+                if gold['rank'] == 0:
+                    self.score_at_1 += 1
         return gold
 
     def score_main(self):

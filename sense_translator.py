@@ -79,7 +79,7 @@ class SenseTranslator():
         return vocab, vecs
 
     def get_engine(self, vocab, vecs):
-        hashes = [PCABinaryProjections('ne1v', 7, vecs[:1000,:].T)]
+        hashes = [PCABinaryProjections('ne1v', 1, vecs[:1000,:].T)]
         #                                      ^ number of hasheses
         engine = Engine(
             vecs.shape[1], lshashes=hashes,
@@ -88,7 +88,7 @@ class SenseTranslator():
         for ind, vec in enumerate(vecs):
             if not ind % 100000:                
                 logging.debug( 
-                    '{} target words added to nearpy engine'.format(ind))
+                    '{} words added to nearpy engine'.format(ind))
             engine.store_vector(vec, ind)
         return engine 
 

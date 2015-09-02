@@ -52,6 +52,9 @@ class SenseTranslator():
         arg_parser.add_argument('sr_embed')
         arg_parser.add_argument('tg_embed')
         arg_parser.add_argument('outfile')
+        arg_parser.add_argument(
+            '-p', '--projections', help='number of hash functions (7--14)', type=int,
+            default=8)
         self.args = arg_parser.parse_args()
 
     def get_embed(self, filen):
@@ -79,8 +82,8 @@ class SenseTranslator():
         return vocab, vecs
 
     def get_engine(self, vocab, vecs):
-        hashes = [PCABinaryProjections('ne1v', 1, vecs[:1000,:].T)]
-        #                                      ^ number of hasheses
+        logging.info('{} hash functions'.format(self.args.projections))
+        hashes = [PCABinaryProjections('ne1v', self.args.projections, vecs[:1000,:].T)]
         engine = Engine(
             vecs.shape[1], lshashes=hashes,
             distance=[],
@@ -103,11 +106,14 @@ class SenseTranslator():
     def main(self):
         logging.info('writing dictionary to {} ...'.format(self.args.outfile))
         towarn = []
+        old_hwd = ''
         for i, (hwd, sr_vec) in enumerate(izip(self.sr_vocab, self.sr_vecs)):
+            if hwd != old_hwd:
+                sense_without_trans = 0
             if not i % 1000:
                 msg = '{} words translated'.format(i)
                 if towarn:
-                    msg +=', except for {}'.format(', '.join(towarn[:9]))
+                    msg +=', except for {} ones, e.g. {}'.format(len(towarn), ', '.join(towarn[:9]))
                 logging.debug(msg)
                 towarn = []
             try:
@@ -118,7 +124,9 @@ class SenseTranslator():
                     ', '.join(self.near_words(self.tg_engine,
                                               sr_vec.dot(self.mx), self.tg_vocab))))
             except:
-                towarn.append(hwd)
+                sense_without_trans += 1
+                if sense_without_trans > 1:
+                    towarn.append(hwd)
 
 
 if __name__ == "__main__":

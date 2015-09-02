@@ -10,18 +10,17 @@ class AdagramToWord2vecConverter():
     Converts  an AdaGram VSM to a word2vec-like format
 
     Usage 
+        python adagram_to_word2vec.py model.epi vocab model.jtxt2 model.mpt
+    Creating the input files:
+        in julia 
+            epi = [expected_pi(vm, i) for i in 1:length(dict.id2word)];
+            writedlm("model.epi", epi)
+            writedlm("vocab", dict.id2word)
+            writedlm("model.jtxt", vm.In)
+        then in bash 
+            tr -d '][' < model.jtxt > model.jtxt2
 
-        python adagram_to_word2vec.py model.epi vocab model.jtxt model.mpt
-
-    where the input files were created in julia with the following commands:
-
-        epi = [expected_pi(vm, i) for i in 1:length(dict.id2word)];
-        writedlm("model.epi", epi)
-        writedlm("vocab", dict.id2word)
-        writedlm("model.jtxt", vm.In)
-
-    output: 
-
+    Output: 
         like w2v but more vectors for the same word corresponding to different
         senses
     """
@@ -51,20 +50,38 @@ class AdagramToWord2vecConverter():
 
     def get_embed(self):
         filename, ext = os.path.splitext(self.argv.vectors)
-        if ext == ".jtxt":
+        if ext == 'npy':
+            self.vm = numpy.load(open(self.argv.vectors)) 
+        else:
+            if not self.argv.dimension:
+                raise Exception('you need to specify the embedding dimension')
             logging.info("Reading embedding from {} ...".format(self.argv.vectors))
-            flat_vm = numpy.genfromtxt(self.argv.vectors, dtype='float16')
+            flat_vm = self.iter_loadtxt(self.argv.vectors, dtype=float)
+            new_shape = (-1, self.argv.dimension, flat_vm.shape[1])
             try:
-                self.vm = flat_vm.reshape((-1, self.argv.dimension, flat_vm.shape[1]))
+                self.vm = flat_vm.reshape(new_shape)
             except:
-                raise Exception((flat_vm.shape, 
-                                 (-1, self.argv.dimension, flat_vm.shape[1])))
+                raise Exception('cannot reshape {} --> {}'.format(
+                    flat_vm.shape, new_shape))
             name_npy = "{}.npy".format(filename)
             if not os.path.isfile(name_npy):
                 logging.info("Saving embedding to {}".format(name_npy))
                 numpy.save(open(name_npy, mode="w"), self.vm)
-        else: 
-            self.vm = numpy.load(open(self.argv.vectors)) 
+
+    def iter_loadtxt(self, filename, delimiter=None, skiprows=0, dtype=float):
+        def iter_func():
+            with open(filename, 'r') as infile:
+                for _ in range(skiprows):
+                    next(infile)
+                for line in infile:
+                    line = line.rstrip().split(delimiter)
+                    for item in line:
+                        yield dtype(item)
+            self.rowlength = len(line)
+            
+        data = numpy.fromiter(iter_func(), dtype=dtype)
+        data = data.reshape((-1, self.rowlength))
+        return data
 
     def main(self):
         big_voc_size = int(sum(numpy.minimum(
@@ -78,7 +95,7 @@ class AdagramToWord2vecConverter():
                     numpy.argsort(-distri)[:self.argv.max_sense_num]]:
                 if numpy.any(vec):
                     self.outfile.write("{} {}\n".format(word, " ".join(
-                    str(cell) for cell in vec)))
+                        str(cell) for cell in vec)))
 
 
 if __name__ == "__main__":

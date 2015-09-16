@@ -61,6 +61,9 @@ class SenseTranslator():
         filenp, ext = os.path.splitext(filen)
         logging.info('getting embedding from {} ...'.format(filen))
         if ext in ['.w2v', '.mpt']:
+            filen_npz = '{}.npz'.format(filenp)
+            if os.path.isfile(filen_npz):
+                logging.warning('embedding also available in npz format')
             infile = open(filen)
             header = infile.readline().strip()
             vocab_size, dim = [int(token) for token in header.split()]
@@ -69,16 +72,17 @@ class SenseTranslator():
             vecs = numpy.genfromtxt( 
                 open(filen).readlines()[:300001], skip_header=1,
                 usecols=numpy.arange(1,dim+1), comments=None, dtype='float32')
-            filen_npz = '{}.npz'.format(filenp)
-            if not os.path.isfile(filen_npz):
+            if ext == 'mpt' and not os.path.isfile(filen_npz):
                 logging.info('saving embedding to {}'.format(filen_npz))
                 numpy.savez_compressed(filen_npz, vocab, vecs)
         elif ext == '.npz':
             vocab = numpy.load(filen)['arr_0']
+            logging.debug(vocab[:10])
             vecs = numpy.load(filen)['arr_1']
         else:
             raise Exception('Unknown embedding extension: {}'.format(ext))
-        logging.debug('... with shape {} ({})'.format(vecs.shape, vecs.dtype))
+        logging.info('... with shape {} ({})'.format(vecs.shape, vecs.dtype))
+        #logging.debug('\n{}'.format(vecs))
         return vocab, vecs
 
     def get_engine(self, vocab, vecs):
@@ -90,7 +94,7 @@ class SenseTranslator():
             vector_filters=[])
         for ind, vec in enumerate(vecs):
             if not ind % 100000:                
-                logging.debug( 
+                logging.info( 
                     '{} words added to nearpy engine'.format(ind))
             engine.store_vector(vec, ind)
         return engine 
@@ -114,7 +118,7 @@ class SenseTranslator():
                 msg = '{} words translated'.format(i)
                 if towarn:
                     msg +=', except for {} ones, e.g. {}'.format(len(towarn), ', '.join(towarn[:9]))
-                logging.debug(msg)
+                logging.info(msg)
                 towarn = []
             try:
                 self.outfile.write('{}\t{}\t{}\n'.format(

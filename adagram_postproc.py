@@ -29,7 +29,6 @@ class AdagramToWord2vecConverter():
     def parse_args(self):
         arg_parser = argparse.ArgumentParser()
         arg_parser.add_argument("dimension", type=int)
-        arg_parser.add_argument("expected_pi")
         arg_parser.add_argument("vocab")
         arg_parser.add_argument("vectors")
         arg_parser.add_argument("outfile")
@@ -43,8 +42,6 @@ class AdagramToWord2vecConverter():
         format_ = "%(asctime)s %(module)s (%(lineno)s) %(levelname)s %(message)s"
         logging.basicConfig(level=logging.DEBUG, format=format_)
         self.parse_args()
-        self.expected_pi = numpy.genfromtxt(open(self.argv.expected_pi),
-                                            delimiter=",")
         self.vocab = [line.strip() for line in open(self.argv.vocab)]
         self.get_embed()
         self.outfile = open(self.argv.outfile, mode="w")
@@ -78,9 +75,9 @@ class AdagramToWord2vecConverter():
         logging.info("Writing embedding with shape {} {} to {} ...".format(
             big_voc_size, self.vm.shape[1], self.argv.outfile))
         self.outfile.write("{} {}\n".format(big_voc_size, self.vm.shape[1]))
-        for distri, word, vecs in izip(self.expected_pi, self.vocab, self.vm):
+        for word, vecs in izip(self.vocab, self.vm):
             for vec in vecs.T[
-                    numpy.argsort(-distri)[:self.argv.max_sense_num]]:
+                    :self.argv.max_sense_num]:
                 if numpy.any(vec):
                     self.outfile.write("{} {}\n".format(word, " ".join(
                         str(cell) for cell in vec)))

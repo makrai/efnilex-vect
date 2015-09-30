@@ -19,18 +19,12 @@ class EmbedInterProcessor():
             '\xe2\x81\xa2', '\xe2\x81\xa3', '\xe2\x81\xa4', '\xe2\x81\xa5',
             '\xe2\x81\xa6', '\xe2\x81\xa7', '\xe2\x81\xa8', '\xe2\x81\xa9']
 
-    def normalize(self, word):
-        # TODO
-        return word
-        word = word.strip()
-        for i, space in enumerate(self.spaces):
-            word.replace(space, '_'.decode('utf-8'))
-        return word
-            
     def main(self):
         for in_filen in sys.argv[1:]:
             logging.info('Processing {}'.format(in_filen))
             file_pref, ext = os.path.splitext(in_filen)
+            # TODO skip words with control characters and decrease vocab size
+            # in header
             if ext == '.pkl':
                 # this branch is for embeddings from
                 # https://sites.google.com/site/rmyeid/projects/polyglot
@@ -65,7 +59,7 @@ class EmbedInterProcessor():
                                     'line with white space skipped (#{})'.format(
                                         i))
                                 continue
-                            fields[0] = self.normalize(fields[0])
+                            fields[0] = fields[0]
                             if not fields[0]:
                                 logging.info('empty word in line {}, skipped'.format(
                                     i))

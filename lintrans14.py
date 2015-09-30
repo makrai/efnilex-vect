@@ -29,64 +29,57 @@ class LinearTranslator:
         self.output_dir = output_dir if output_dir else self.args.output_dir
         if not os.path.isdir(output_dir):
             os.mkdir(self.args.output_dir)
-        self.mode_dir = '{}/{}/'.format(self.output_dir, self.args.mode)
+        self.mode_dir = "{}/{}/".format(
+            self.output_dir, 
+            "analogy" if self.args.analogy else "collect")
         if not os.path.isdir(self.mode_dir):
             os.mkdir(self.mode_dir)
-        self.get_outfilen()
+        self.get_outfn_rel()
         self.config_logger(self.args.log_to_err)
-        if self.args.mode == 'collect':
+        if not self.args.analogy:
             self.init_collect()
 
     def parse_args(self):
         parser = argparse.ArgumentParser()
-        parser.add_argument(
-            "-m", "--mode", dest='mode',
-            choices=['collect', 'analogy'], default='collect')
-        parser.add_argument(
-            '--output-directory', dest=output_dir)
-        parser.add_argument(
-            '-o', '--output-file-name', dest='outfilen',
-            help='prefix of names of output and log files without path')
-        parser.add_argument(
-            '-l', '--log-to-stderr', action='store_true', dest='log_to_err')
-        parser.add_argument(
-            "-s", "--source-lang-mod", dest='sr_langm_filen', type=str)
-        parser.add_argument(
-            "-t", "--target-lang-mod", dest='tg_langm_filen', type=str)
-        parser.add_argument(
-            "-d", "--seed-dict", type=str,
-            default="wikt2dict",
-            dest='seed_filen')
+        parser.add_argument("seed_fn")
+        parser.add_argument("source_fn")
+        parser.add_argument("target_fn")
         parser.add_argument(
             "-r", "--reverse",
-            action='store_true',
+            action="store_true",
             help="use if the seed dict contains pair in reverse order")
         parser.add_argument(
-            "-v", "--translate-oov", dest='trans_freq_oov',
-            action='store_false',
-            help='Not translate frequent words that are not covered by the\
-            seed')
+            "-v", "--translate-oov", dest="trans_freq_oov",
+            action="store_false",
+            help="Not translate frequent words that are not covered by the\
+            seed")
         parser.add_argument(
-            '-b', '--non-ambig', dest='ambig', help="don't let words have more translations",
-            action='store_false')
+            "-b", "--non-ambig", dest="ambig", 
+            help="don't let words have more gold translations",
+            action="store_false")
         parser.add_argument(
-            '-e', '--exact-neighbour', dest='exact_neighbour',
-            action='store_true',
-            help="instead of approximating by nearpy, compute exact neighbours")
+            "-n-proj", dest="n_proj", type=int, default=1,
+            help="number of PCABinaryProjections in nearpy engine")
         parser.add_argument(
-            '-p', '--pair', default='en_hu',
-            help='language pair (in alphabetical order)')
+            "-a", "--analogy", action="store_true")
         parser.add_argument(
-            '-c', '--restrict-embed', choices = ['n', 's', 't', 'st'],
-            dest='restrict_embed', default='n',
+            "--output-directory", dest=output_dir)
+        parser.add_argument(
+            "-o", "--output-file-name", dest="outfn_rel",
+            help="prefix of names of output and log files without path")
+        parser.add_argument(
+            "-l", "--log-to-stderr", action="store_true", dest="log_to_err")
+        parser.add_argument(
+            "-c", "--restrict-embed", choices = ["n", "s", "t", "st"],
+            dest="restrict_embed", default="n",
             help="which of the source and the target embeddings to restrict:\
             *n*one, *s*ource, *t*arget, or *st* both") 
         parser.add_argument(
-            "-f", "--forced-stem", dest='forced_stem', action='store_true',
+            "-f", "--forced-stem", dest="forced_stem", action="store_true",
             help='consider only "forced" stems')
         return parser.parse_args()
 
-    def get_outfilen(self):
+    def get_outfn_rel(self):
         """"
         Output files are named according to the pattern
         source__target__seed__opts
@@ -94,103 +87,103 @@ class LinearTranslator:
             source describes the source language model
             target describes the target language model
             seed describes the seed dictionary
-            opts describes the value of command line options v, f, c,
-            and e (mostly for debugging or papameter analysis)
+            opts describes the value of command line options v and n-proj
         """
-        if not self.args.outfilen:
-            if self.args.mode == 'analogy':
-                self.args.outfilen = self.strip_embed_filen(
-                    self.args.sr_langm_filen)
+        if not self.args.outfn_rel:
+            if self.args.analogy:
+                self.args.outfn_rel = self.strip_embed_filen(
+                    self.args.source_fn)
             else:
-                assert self.args.mode in ['collect', 'score']
-                self.args.outfilen = '{}__{}__{}__{}v-{}f-c{}-{}e'.format(
-                    self.strip_embed_filen(self.args.sr_langm_filen),
-                    self.strip_embed_filen(self.args.tg_langm_filen),
-                    self.args.seed_filen.split('/')[-1],
+                self.args.outfn_rel = "{}__{}__{}__{}v-{}p".format(
+                    self.strip_embed_filen(self.args.source_fn),
+                    self.strip_embed_filen(self.args.target_fn),
+                    self.args.seed_fn.split("/")[-1],
                     int(self.args.trans_freq_oov),
-                    int(self.args.forced_stem),
-                    self.args.restrict_embed,
-                    int(self.args.exact_neighbour))
-        self.out_dict_filen = self.mode_dir + self.args.outfilen
-        if os.path.isfile(self.out_dict_filen):
+                    self.args.n_proj)
+        self.outfn_abs = self.mode_dir + self.args.outfn_rel
+        if os.path.isfile(self.outfn_abs):
             raise Exception(
-                'file for collected translation pairs exists {}'.format(
-                    self.out_dict_filen))
+                "file for collected translation pairs exists {}".format(
+                    self.outfn_abs))
 
     def strip_embed_filen(self, old_filen):
         path, new_filen = os.path.split(old_filen)
         new_filen, ext = os.path.splitext(new_filen)
-        if ext[1:] in ['w2v', 'gensim', 'gz', 'bin', 'pkl', 'txt']:
+        if ext[1:] in ["w2v", "w2vbin", "gensim", "gz", "bin", "pkl", "txt"]:
             return self.strip_embed_filen(new_filen)
         else:
             return old_filen
 
     def config_logger(self, log_to_err):
-        level = logging.DEBUG
-        format_ = "%(asctime)s : %(module)s (%(lineno)s) - %(levelname)s - %(message)s"
+        logger = logging.getLogger()
+        logger.setLevel(logging.DEBUG)
         if log_to_err:
-            logging.basicConfig(level=level, format=format_)
+            handler = logging.StreamHandler()
         else:
-            filename = '{}/{}/log/{}'.format(self.output_dir, self.args.mode,
-                                            self.args.outfilen)
-            if os.path.isfile(filename):
-                os.remove(filename)
-            logging.basicConfig(filename=filename, level=level,
-                                format=format_)
+            log_fn = "{}/{}/log/{}".format(
+                self.output_dir, 
+                "analogy" if self.args.analogy else "collect",
+                self.args.outfn_rel)
+            if os.path.isfile(log_fn):
+                os.remove(log_fn)
+            handler = logging.FileHandler(log_fn, encoding='utf8')
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(module)s (%(lineno)s) %(levelname)s %(message)s"))
+        logger.addHandler(handler)
 
     def init_collect(self):
-        self.outfile = open(self.out_dict_filen, mode='w')
-        self.train_needed = 5000 if self.args.mode == 'collect' else 20000
-        self.test_needed= 1000 if self.args.mode == 'collect' else 20000
-        self.sr_model = self.load_embed(self.args.sr_langm_filen)
-        self.tg_model = self.load_embed(self.args.tg_langm_filen)
-        # TODO? self.tg_model.syn0.astype('float32', casting='same_kind',
+        self.train_needed = 20000 if self.args.analogy else 5000
+        self.test_needed= 20000 if self.args.analogy else 1000
+        self.sr_model = self.load_embed(self.args.source_fn)
+        self.tg_model = self.load_embed(self.args.target_fn)
+        # TODO? self.tg_model.syn0.astype("float32", casting="same_kind",
         # copy=False)
         self.tg_index = bidict(enumerate(self.tg_model.index2word))
+        self.tg_vocab = set(self.tg_index.itervalues())
         self.read_seed()
         self.get_training_data()
         self.get_trans_model()
+        logging.info("Fitting translation model {}...".format(self.trans_model))
         self.trans_model.fit(np.array(self.sr_train), np.array(self.tg_train))
 
     def main(self):
-        if self.args.mode == 'analogy':
-            self.analogy_main()
+        if self.args.analogy:
+            self.args.analogy_main()
         else:
-            assert self.args.mode == 'collect'
             self.collect_main()
 
     def analogy_main(self):
         self.config_logger(self.args.log_to_err)
-        model = self.load_embed(self.args.sr_langm_filen, type_='model')
+        model = self.load_embed(self.args.source_fn, type_="model")
         lower = False
-        for label in ['+l', '1l']:
-            if label in self.args.sr_langm_filen:
+        for label in ["+l", "1l"]:
+            if label in self.args.source_fn:
                 lower = True
         return model.accuracy(
-            os.path.expanduser('~') +
-            '/project/efnilex/vector/analogy/hu/questions-words.txt',
+            os.path.expanduser("~") +
+            "/project/efnilex/vector/analogy/hu/questions-words.txt",
             lower=lower)
 
-    def load_embed(self, filen, write_vocab=False, type_='mx_and_bidict'):
-        if re.search('gensim', filen):
+    def load_embed(self, filen, write_vocab=False, type_="mx_and_bidict"):
+        if re.search("gensim", filen):
             return Word2Vec.load(filen)
-        elif re.search('polyglot-..\.pkl$', filen):
+        elif re.search("polyglot-..\.pkl$", filen):
             model = Word2Vec()
-            words_t, model.syn0 = pickle.load(open(filen, mode='rb'))
+            words_t, model.syn0 = pickle.load(open(filen, mode="rb"))
             logging.info(
-                'Embedding with shape {} loaded'.format(model.syn0.shape))
+                "Embedding with shape {} loaded".format(model.syn0.shape))
             model.index2word = list(words_t)
             return model
-        elif re.search('webcorp/polyglot', filen):
+        elif re.search("webcorp/polyglot", filen):
             from polyglot2.polyglot2 import Polyglot
-            logging.info('loading lang_mod from {}'.format(filen))
+            logging.info("loading lang_mod from {}".format(filen))
             return Polyglot.load_word2vec_format(filen)
-        elif 'hunvec' in filen:
+        elif "hunvec" in filen:
             #mx = nnlm.model.get_params()[0].get_value()
             raise NotImplementedError
         else:
             # The embedding in the format of the original C code
-            return Word2Vec.load_word2vec_format(filen, binary='bin' in filen)
+            return Word2Vec.load_word2vec_format(filen, binary="bin" in filen)
 
     def collect_main(self):
         """
@@ -199,38 +192,36 @@ class LinearTranslator:
         """
         self.neighbour_k = 10
         self.populate_nearpy_engine()
-        logging.info('Collecting translations...')
+        logging.info("Collecting translations...")
         self.collected = 0
         self.has_seed = 0
-        self.score_at_5 = 0
-        self.score_at_1 = 0
-        #self.test_dict_f = open('test_dict', mode='w')
-        for sr_word, sr_vec in izip(
-                self.sr_model.index2word[self.sr_position:],
-                self.sr_model.syn0[self.sr_position:]):
-            self.test_item(sr_word, sr_vec)
-            if self.has_seed >= self.test_needed:
-                # TODO If the goal is not only measuring precision but
-                # collecting as many translations as possible, and sr lang_mod
-                # is properly chosen, no breaking is needed.
-                break
-        else:
-            logging.error(
-                'Only {} test pairs with gold data. {} needed.'.format(
-                    self.has_seed, self.test_needed))
-        if self.has_seed != self.test_needed:
-            logging.debug((self.has_seed, self.test_needed))
-        logging.info('on {} words, prec@1: {:.2%}\tprec@5: {:.2%}'.format(
-            self.has_seed,
-            *[float(score)/self.has_seed
-              for score in [ self.score_at_1, self.score_at_5]]))
-        if self.args.trans_freq_oov:
-            logging.info(
-                'Translating frequent words without seed translation...')
-            for sr_word, sr_vec in self.sr_freq_not_seed:
+        self.score_at = defaultdict(int)
+        self.without_neighbour = None
+        with open(self.outfn_abs, mode="w") as self.outfile:
+            for sr_word, sr_vec in izip(
+                    self.sr_model.index2word[self.sr_position:],
+                    self.sr_model.syn0[self.sr_position:]):
                 self.test_item(sr_word, sr_vec)
-        else:
-            logging.info('Frequent words without seed translation skipped.')
+                if self.has_seed == self.test_needed:
+                    # TODO If the goal is not only measuring precision but
+                    # collecting as many translations as possible, and sr lang_mod
+                    # is properly chosen, no breaking is needed.
+                    break
+            else:
+                logging.error(
+                    "Only {} test pairs with gold data. {} needed.".format(
+                        self.has_seed, self.test_needed))
+            logging.info("on {} words, prec@1: {:.2%}\tprec@5: {:.2%}".format(
+                self.has_seed,
+                *[float(self.score_at[k])/self.has_seed
+                  for k in [1, 5]]))
+            if self.args.trans_freq_oov:
+                logging.info(
+                    "Translating frequent words without seed translation...")
+                for sr_word, sr_vec in self.sr_freq_not_seed:
+                    self.test_item(sr_word, sr_vec)
+            else:
+                logging.info("Frequent words without seed translation skipped.")
 
     def read_seed(self):
         """
@@ -238,57 +229,54 @@ class LinearTranslator:
         case of wikt2dict, the first translation is present in more editions
         of Wiktionary.
         """
-        logging.info('Reading seed dictionary from {}'.format(
-            self.args.seed_filen))
-        # TODO do we need fallback?
-        columns = [1,3] if 'wikt' in self.args.seed_filen else range(2)
+        logging.info("Reading seed dictionary from {}".format(
+            self.args.seed_fn))
+        _, ext = os.path.splitext(self.args.seed_fn)
+        assert ext[1:] in ['ssv', '5col']
+        columns = [1,3] if ext == '.5col' else range(2)
         if self.args.reverse:
             columns.reverse()
         self.seed_dict = defaultdict(list)
-        with codecs.open(self.args.seed_filen, encoding='utf-8') as file_:
+        with codecs.open(self.args.seed_fn, encoding="utf-8") as file_:
             for line in file_.readlines():
-                separator = '\t' if '\t' in line else ' '
+                separator = "\t" if "\t" in line else " "
                 cells = line.strip().split(separator)
                 sr_word, tg_word = [cells[index] for index in columns]
                 if self.args.ambig or sr_word not in self.seed_dict:
                     self.seed_dict[sr_word].append(tg_word)
-        logging.info('{} seed pairs e.g. {}'.format(
+        logging.info("{} seed pairs e.g. {}".format(
             len(self.seed_dict), 
             self.seed_dict.items()[:5]))
         if len(self.seed_dict.keys()) < self.train_needed:
-                logging.error('too few training pairs')
-                raise Exception('too few training pairs')
+                logging.error("too few training pairs")
+                raise Exception("too few training pairs")
 
     def get_training_data(self):
-        train_dat_fn = '{}/train_dat/{}__{}__{}.pkl'.format(
+        train_dat_fn = "{}/train_dat/{}__{}__{}.pkl".format(
             self.output_dir,
-            self.strip_embed_filen(self.args.sr_langm_filen),
-            self.strip_embed_filen(self.args.tg_langm_filen),
-            self.args.seed_filen.split('/')[-1])
+            self.strip_embed_filen(self.args.source_fn),
+            self.strip_embed_filen(self.args.target_fn),
+            self.args.seed_fn.split("/")[-1])
         if os.path.isfile(train_dat_fn):
-            logging.info('loading training data from {}'.format(train_dat_fn))
+            logging.info("loading training data from {}".format(train_dat_fn))
             (self.sr_train, self.sr_freq_not_seed, self.sr_position,
              self.tg_train, self.ootg) = cPickle.load(open(train_dat_fn,
-                                                           mode='rb'))
+                                                           mode="rb"))
             return
         self.sr_train = []
         self.sr_freq_not_seed = []
         self.tg_train = []
         self.ootg = []
         train_collected = 0
-        #train_dict_f = open('train_dict', mode='w')
         for i, (sr_word, sr_vec) in enumerate(izip(self.sr_model.index2word,
                                                    self.sr_model.syn0)):
             if train_collected < self.train_needed:
                 if sr_word in self.seed_dict:
                     tg_word = self.seed_dict[sr_word][0]
-                    #train_dict_f.write('{} {}\n'.format(
-                    #    sr_word.encode('utf-8'),
-                    #    tg_word.encode('utf-8')))
-                    if tg_word in self.tg_index.itervalues():
+                    if tg_word in self.tg_vocab:
                         if not train_collected % 1000:
                             logging.debug(
-                                '{} training items collected'.format(
+                                "{} training items collected".format(
                                     train_collected))
                         train_collected += 1
                         self.sr_train.append(sr_vec)
@@ -300,39 +288,41 @@ class LinearTranslator:
                     self.sr_freq_not_seed.append((sr_word, sr_vec))
             else:
                 self.sr_position = i
-                logging.info('At seed item {}'.format(self.sr_position))
+                logging.info(
+                    "Training finished seed item #{}".format(
+                        self.sr_position - 1))
                 break
         else:
-            logging.error('Too few training pairs')
+            logging.error("Too few training pairs")
             self.sr_position = None
-        logging.debug('out of target embed: {}'.format(
-                '; '.join(word.encode('utf8') for word in self.ootg[:20])))
+        logging.debug("out of target embed: {}".format(
+                "; ".join(word.encode("utf8") for word in self.ootg[:20])))
         if not self.sr_position:
-            raise Exception('Too few training pairs')
-        logging.info('Pickling training data to {}'.format(train_dat_fn))
+            raise Exception("Too few training pairs")
+        logging.info("Pickling training data to {}".format(train_dat_fn))
         cPickle.dump((self.sr_train, self.sr_freq_not_seed, self.sr_position,
-                      self.tg_train, self.ootg), open(train_dat_fn, mode='wb'))
+                      self.tg_train, self.ootg), open(train_dat_fn, mode="wb"))
 
     def get_trans_model(self):
         """
         http://stackoverflow.com/questions/19650115/which-scikit-learn-tools-\
                 can-handle-multivariate-output
         """
-        self.trans_model = LinearRegression()
+        self.trans_model = LinearRegression(n_jobs=6)
         # TODO parametrize trans_model
-        # TODO crossvalidation
-        logging.info('Fitting translation model {}...'.format(
-            self.trans_model))
+        # TODO crossvalidation?
 
 
     def populate_nearpy_engine(self):
+        # TODO rewrite based on sense_translator.get_engine
         """
         Populates the nearpy engine. Note that the instanciation of the PCA
         hash means a PCA of the target embedding and consumes much memory.
         """
-        logging.info('Creating nearpy engine...')
+        logging.info("Creating nearpy engine...")
         hashes = [PCABinaryProjections(
-            'ne1v', 1, self.tg_model.syn0.T[:1000,:])]
+            "ne1v", self.args.n_proj, self.tg_model.syn0.T[:1000,:])]
+        # TODO jo1 helyen van a .T?
         logging.info(hashes)
         dim = self.tg_model.layer1_size
         self.engine = Engine(dim, lshashes=hashes, vector_filters=[],
@@ -340,24 +330,35 @@ class LinearTranslator:
         for ind in xrange(self.tg_model.syn0.shape[0]):
             if not ind % 200000:
                 logging.debug(
-                    '{} target words added to nearpy engine'.format(ind))
+                    "{} target words added to nearpy engine".format(ind))
             self.engine.store_vector(self.tg_model.syn0[ind,:], ind)
 
     def test_item(self, sr_word, sr_vec, prec_at=9):
         if not self.collected % 100:
-            msg = '{} translations collected, {} have reference translation'
+            msg = "{} translations collected, {} have reference translation"
+            if self.without_neighbour:
+                msg +=', except for {} ones, e.g. '.format(
+                    len(self.without_neighbour))
+                msg += ', '.join(self.without_neighbour[:9])
             logging.debug(msg.format( self.collected, self.has_seed))
+            self.without_neighbour = []
         self.collected += 1
         guessed_vec = self.trans_model.predict(sr_vec.reshape((1,-1)))
-        # TODO? .astype('float32')
-        if self.args.exact_neighbour:
+        # TODO? .astype("float32")
+        if not self.args.n_proj:
             near_vecs = self.tg_model.syn0
         else:
-            near_vecs, near_inds = izip(
-                *self.engine.neighbours(guessed_vec.reshape(-1)))
+            try:
+                near_vecs, near_inds = izip(
+                    *self.engine.neighbours(guessed_vec.reshape(-1)))
+            except ValueError: 
+                self.without_neighbour.append(sr_word)
+                logging.warn(
+                    'no word near to the mapped vector for '+sr_word)
+                return
         #if not self.collected % 100: logging.debug(
-        #'{} approximate neighbours'.format(len(near_inds)))
-        distances = cdist(near_vecs, guessed_vec, 'cosine').reshape(-1)
+        #"{} approximate neighbours".format(len(near_inds)))
+        distances = cdist(near_vecs, guessed_vec, "cosine").reshape(-1)
         # ^ 1/3 of time is spent here
         inds_among_near = np.argsort(distances)
         tg_indices_ranked = [near_inds[i] for i in inds_among_near]
@@ -365,13 +366,13 @@ class LinearTranslator:
             sr_word, tg_indices_ranked[:self.neighbour_k])
         best_dist = distances[inds_among_near[0]]
         self.outfile.write(
-            '{sr_w}\t{gold_tg_w}\t{gold_rank}\t{dist:.4}\t{tg_ws}\n'.format(
-                sr_w=sr_word.encode('utf-8'),
-                gold_tg_w=gold['word'].encode('utf-8'),
-                gold_rank=gold['rank'],
+            "{sr_w}\t{gold_tg_w}\t{gold_rank}\t{dist:.4}\t{tg_ws}\n".format(
+                sr_w=sr_word.encode("utf-8"),
+                gold_tg_w=gold["word"].encode("utf-8"),
+                gold_rank=gold["rank"],
                 dist=best_dist,
-                tg_ws=' '.join(
-                    self.tg_index[ind].encode('utf-8')
+                tg_ws=" ".join(
+                    self.tg_index[ind].encode("utf-8")
                     for ind in tg_indices_ranked[:prec_at])))
 
     def eval_item_with_gold(self, sr_word, tg_indices_ranked):
@@ -379,11 +380,11 @@ class LinearTranslator:
         Looks up the gold target words and books precision.
         """
         gold = {
-            'word': '', 'rank': '>{}'.format(self.neighbour_k)}
+            "word": "", "rank": ">{}".format(self.neighbour_k)}
         if sr_word in self.seed_dict:
             self.has_seed += 1
             gold_words_embedded = filter(
-                lambda w: w in self.tg_index.itervalues(),
+                lambda w: w in self.tg_vocab,
                 self.seed_dict[sr_word])
             indices_gold_embedded = [
                 self.tg_index[:w] for w in gold_words_embedded]
@@ -394,19 +395,18 @@ class LinearTranslator:
                                 indices_gold_found)
             if not ranks_of_gold:
                 return gold
-            gold['rank'] = min(ranks_of_gold)
-            gold['word'] = self.tg_index[tg_indices_ranked[gold['rank']]]
-            #self.test_dict_f.write('{} {}\n'.format(
-            #                sr_word.encode('utf-8'),
-            #                gold['word'].encode('utf-8')))
-            if gold['rank'] < 5:
-                self.score_at_5 += 1
-                if gold['rank'] == 0:
-                    self.score_at_1 += 1
+            gold["rank"] = min(ranks_of_gold)
+            gold["word"] = self.tg_index[tg_indices_ranked[gold["rank"]]]
+            #self.test_dict_f.write("{} {}\n".format(
+            #                sr_word.encode("utf-8"),
+            #                gold["word"].encode("utf-8")))
+            for k in [5, 1]:
+                if gold["rank"] < k:
+                    self.score_at[k] += 1
         return gold
 
 
-if __name__=='__main__':
-    output_dir = '/mnt/store/home/makrai/project/efnilex'
-    #cProfile.run('
-    LinearTranslator(output_dir).main()#')
+if __name__=="__main__":
+    output_dir = "/mnt/store/home/makrai/project/efnilex"
+    #cProfile.run("
+    LinearTranslator(output_dir).main()#")

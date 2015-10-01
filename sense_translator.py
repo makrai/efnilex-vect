@@ -88,10 +88,8 @@ class SenseTranslator():
     def get_engine(self, vocab, vecs):
         logging.info('{} hash functions'.format(self.args.projections))
         hashes = [PCABinaryProjections('ne1v', self.args.projections, vecs[:1000,:].T)]
-        engine = Engine(
-            vecs.shape[1], lshashes=hashes,
-            distance=[],
-            vector_filters=[])
+        engine = Engine(vecs.shape[1], lshashes=hashes, distance=[],
+                        vector_filters=[])
         for ind, vec in enumerate(vecs):
             if not ind % 100000:                
                 logging.info( 

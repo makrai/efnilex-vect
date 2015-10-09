@@ -47,8 +47,9 @@ class DictionaryScorer():
         logging.info('scoring')
         for srw, tgw in self.indict:
             if srw in self.sr_embed and tgw in self.tg_embed:
-                self.outfile.write('{}\n'.format(cosine(self.tg_embed[tgw],
-                             self.sr_embed[srw].reshape(1,-1).dot(self.trans_mx))))
+                self.outfile.write('{}\n'.format(
+                    cosine(self.tg_embed[tgw],
+                           self.sr_embed[srw].reshape(1,-1).dot(self.trans_mx))))
             else:
                 self.outfile.write('{}\n'.format(2))
 

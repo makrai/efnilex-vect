@@ -22,7 +22,7 @@ class LinearTranslator:
     Collects translational word pairs from neural language models (embeddings)
     for the source and the target language.  The translation model is a linear
     mapping between the two vector spaces following Mikolov et al (2013
-    Exploiting...), trained and tested on a seed dictionary.
+    Exploiting similarities...), trained and tested on a seed dictionary.
     """
     def __init__(self, args, output_dir=None):
         self.args = args
@@ -41,8 +41,11 @@ class LinearTranslator:
 
     def get_outfn_rel(self):
         """"
-        Output files are named according to the pattern
-        source__target__seed__opts
+        Gets the relative path of the output file that is named according to
+        the pattern
+
+            source__target__seed__opts
+
         where
             source describes the source language model
             target describes the target language model
@@ -146,9 +149,9 @@ class LinearTranslator:
 
     def read_seed(self):
         """
-        It is assumed that the first translation is the best.  E.g. in the
-        case of wikt2dict, the first translation is present in more editions
-        of Wiktionary.
+        It could be assumed that the first translation in the file is the
+        best one (the target word is more frequent or, in the case of a
+        triangulated translation, the triangle is supported by more pivots).
         """
         logging.info("Reading seed dictionary from {}".format(
             self.args.seed_fn))
@@ -229,8 +232,7 @@ class LinearTranslator:
         http://stackoverflow.com/questions/19650115/which-scikit-learn-tools-\
                 can-handle-multivariate-output
         """
-        self.trans_model = LinearRegression(n_jobs=6, fit_intercept=False)
-
+        self.trans_model = LinearRegression(n_jobs=6, fit_intercept=False) 
         # parameters of LinearRegression:
             # normalize doesn't seem to cause any difference
             # for saving memory, copy_X=True could be tried (with some risk)
@@ -242,16 +244,10 @@ class LinearTranslator:
             self.collect_main()
 
     def analogy_main(self):
-        self.config_logger(self.args.log_to_err)
         model = self.load_embed(self.args.source_fn, type_="model")
-        lower = False
-        for label in ["+l", "1l"]:
-            if label in self.args.source_fn:
-                lower = True
         return model.accuracy(
-            os.path.expanduser("~") +
-            "/project/efnilex/vector/analogy/hu/questions-words.txt",
-            lower=lower)
+            "/home/makrai/project/efnilex/2014/vect/analogy/hu/questions-words.txt",
+            lower=False)
 
     def collect_main(self):
         """
@@ -259,6 +255,7 @@ class LinearTranslator:
         compute translations of frequent words without seed translation.
         """
         self.neighbour_k = 10
+        self.prec_thresholds = [1, 5, 10]
         self.get_nearpy_engine()
         logging.info("Collecting translations...")
         self.collected = 0
@@ -266,9 +263,8 @@ class LinearTranslator:
         self.score_at = defaultdict(int)
         self.without_neighbour = None
         with open(self.outfn_abs, mode="w") as self.outfile:
-            for sr_word, sr_vec in izip(
-                    self.sr_model.index2word[self.sr_position:],
-                    self.sr_model.syn0[self.sr_position:]):
+            for sr_word, sr_vec in izip(self.sr_model.index2word[self.sr_position:],
+                                        self.sr_model.syn0[self.sr_position:]):
                 self.test_item(sr_word, sr_vec)
                 if self.has_seed == self.test_needed:
                     # TODO If the goal is not only measuring precision but
@@ -282,7 +278,7 @@ class LinearTranslator:
             logging.info("on {} words, prec@1: {:.2%}\tprec@5: {:.2%}".format(
                 self.has_seed,
                 *[float(self.score_at[k])/self.has_seed
-                  for k in [1, 5]]))
+                  for k in self.prec_thresholds]))
             if self.args.trans_freq_oov:
                 logging.info(
                     "Translating frequent words without seed translation...")
@@ -294,7 +290,7 @@ class LinearTranslator:
     def get_nearpy_engine(self):
         """
         Populates the nearpy engine. Note that the instanciation of the PCA
-        hash means a PCA of the target embedding and consumes much memory.
+        hash means a PCA of 1000 target vectors and may consume much memory.
         """
         logging.info("Creating nearpy engine...")
         hashes = [PCABinaryProjections(
@@ -359,21 +355,19 @@ class LinearTranslator:
             "word": "", "rank": ">{}".format(self.neighbour_k)}
         if sr_word in self.seed_dict:
             self.has_seed += 1
-            gold_words_embedded = filter(
-                lambda w: w in self.tg_vocab,
-                self.seed_dict[sr_word])
-            indices_gold_embedded = [
-                self.tg_index[:w] for w in gold_words_embedded]
-            indices_gold_found = filter(
-                lambda i: i in tg_indices_ranked,
-                indices_gold_embedded)
-            ranks_of_gold = set(tg_indices_ranked.index(i) for i in
-                                indices_gold_found)
+            gold_words_embedded = filter(lambda w: w in self.tg_vocab,
+                                         self.seed_dict[sr_word])
+            indices_gold_embedded = [self.tg_index[:w] 
+                                     for w in gold_words_embedded]
+            indices_gold_found = filter(lambda i: i in tg_indices_ranked,
+                                        indices_gold_embedded)
+            ranks_of_gold = set(tg_indices_ranked.index(i) 
+                                for i in indices_gold_found)
             if not ranks_of_gold:
                 return gold
             gold["rank"] = min(ranks_of_gold)
             gold["word"] = self.tg_index[tg_indices_ranked[gold["rank"]]]
-            for k in [5, 1]:
+            for k in self.prec_thresholds:
                 if gold["rank"] < k:
                     self.score_at[k] += 1
         return gold

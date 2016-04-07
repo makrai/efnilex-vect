@@ -77,7 +77,10 @@ class EmbedInterProcessor():
                     'glove binaries are not suppoerted')
             else:
                 m = Word2Vec.load_word2vec_format(self.in_filen, binary=True)
+                logging.info("Saving {}".format(self.file_pref+'.gensim'))
                 m.save(self.file_pref+'.gensim')
+                logging.info("Saving {}".format(self.file_pref+'.w2v'))
+                m.save_word2vec_format(self.file_pref+'.w2v')
         else:
             raise NotImplementedError('extension unknown')
 

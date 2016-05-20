@@ -82,7 +82,7 @@ class EmbedInterProcessor():
                 logging.info("Saving {}".format(self.file_pref+'.w2v'))
                 m.save_word2vec_format(self.file_pref+'.w2v')
         else:
-            raise NotImplementedError('extension unknown')
+            raise NotImplementedError('unknown extension')
 
 
 if __name__ == '__main__':

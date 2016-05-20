@@ -5,10 +5,10 @@ import numpy
 from scipy.spatial.distance import cosine
 
 class DictionaryScorer():
-    def __init__(self):
+    def __init__(self, args):
+        self.args = args
         format_ = "%(asctime)s: %(module)s (%(lineno)s) %(levelname)s %(message)s"
         logging.basicConfig(level=logging.DEBUG, format=format_)
-        self.parse_args()
         self.outfile = open(self.args.outfile, mode='w') 
         self.indict = [line.strip().split()
                        for line in open(self.args.indict)]
@@ -20,18 +20,6 @@ class DictionaryScorer():
         tg_voc = set(t for _, t in self.indict)
         self.sr_embed = self.read_embed(self.args.sr_embed, sr_voc)
         self.tg_embed = self.read_embed(self.args.tg_embed, tg_voc)
-
-    def parse_args(self):
-        arg_parser = argparse.ArgumentParser()
-        arg_parser.add_argument('mx')
-        arg_parser.add_argument('indict')
-        arg_parser.add_argument('sr_embed')
-        arg_parser.add_argument('tg_embed')
-        arg_parser.add_argument('outfile')
-        arg_parser.add_argument(
-            '-r', '--reverse', action='store_true', 
-            help='source and target language are reversed in the dictionary')
-        self.args = arg_parser.parse_args()
 
     def read_embed(self, filen, voc):
         logging.info('reading embedding from {}'.format(filen))
@@ -54,5 +42,17 @@ class DictionaryScorer():
                 self.outfile.write('{}\n'.format(2))
 
 
+def parse_args(self):
+    arg_parser = argparse.ArgumentParser()
+    arg_parser.add_argument('mx')
+    arg_parser.add_argument('indict')
+    arg_parser.add_argument('sr_embed')
+    arg_parser.add_argument('tg_embed')
+    arg_parser.add_argument('outfile')
+    arg_parser.add_argument(
+        '-r', '--reverse', action='store_true', 
+        help='source and target language are reversed in the dictionary')
+    return arg_parser.parse_args()
+
 if __name__ == '__main__':
-    DictionaryScorer().main()
+    DictionaryScorer(parse_args()).main()

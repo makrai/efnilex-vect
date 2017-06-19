@@ -6,19 +6,7 @@ import os.path
 from gensim.models.word2vec import Word2Vec
 
 
-class EmbedInterProcessor():
-    def __init__(self):
-        self.spaces = [
-            '\xe2\x80\x80', '\xC2\xA0', '\xe2\x80\x81', '\xe2\x80\x82',
-            '\xe2\x80\x83', '\xe2\x80\x84', '\xe2\x80\x85', '\xe2\x80\x86',
-            '\xe2\x80\x87', '\xe2\x80\x88', '\xe2\x80\x89', '\xe2\x80\x8a',
-            '\xe2\x80\x8b', '\xe2\x80\x8c', '\xe2\x80\x8d', '\xe2\x80\x8e',
-            '\xe2\x80\x8f', '\xe2\x80\xa8', '\xe2\x80\xa9', '\xe2\x80\xaa',
-            '\xe2\x80\xab', '\xe2\x80\xac', '\xe2\x80\xad', '\xe2\x80\xae',
-            '\xe2\x80\xaf', '\xe2\x81\x9f', '\xe2\x81\xa0', '\xe2\x81\xa1',
-            '\xe2\x81\xa2', '\xe2\x81\xa3', '\xe2\x81\xa4', '\xe2\x81\xa5',
-            '\xe2\x81\xa6', '\xe2\x81\xa7', '\xe2\x81\xa8', '\xe2\x81\xa9']
-
+class EmbedInterProcessor(): 
     def read_txt(self):
         logging.info('Clean an embedding in txt format without header...')
         with open(self.file_pref+'.tmp', mode='w') as out_file:
@@ -58,6 +46,9 @@ class EmbedInterProcessor():
         if ext == '.pkl':
             # this branch is for embeddings from
             # https://sites.google.com/site/rmyeid/projects/polyglot
+            logging.warning(
+                'There is a version of this function in the multiwsi repo ' 
+                'that writes the embedding with fewer digits (using st.format)')
             with open(self.file_pref+'.w2v', mode='w') as out_file:
                 with open(self.in_filen, mode='rb') as in_file:
                     words, vecs = pickle.load(in_file)
